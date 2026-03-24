@@ -294,4 +294,128 @@ describe('OpenClaw Protocol v3 Compatibility', () => {
       ws.close();
     });
   });
+
+  describe('HelloOk auth token issuance', () => {
+    it('returns auth block with deviceToken, role, scopes', async () => {
+      server = await startGatewayServer(testPort);
+      const { ws, helloOk } = await openClawClientConnect(testPort);
+
+      const auth = helloOk.payload.auth;
+      expect(auth).toBeDefined();
+      expect(typeof auth.deviceToken).toBe('string');
+      expect(auth.deviceToken.length).toBeGreaterThan(0);
+      expect(auth.role).toBe('operator');
+      expect(Array.isArray(auth.scopes)).toBe(true);
+      ws.close();
+    });
+  });
+
+  describe('Extended ConnectParams acceptance', () => {
+    it('accepts device attestation fields', async () => {
+      server = await startGatewayServer(testPort);
+
+      const result = await new Promise<any>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${testPort}`);
+        ws.on('error', reject);
+        ws.once('message', () => {
+          ws.once('message', (data) => {
+            resolve(JSON.parse(data.toString()));
+            ws.close();
+          });
+          ws.send(JSON.stringify({
+            type: 'req', id: '1', method: 'connect',
+            params: {
+              minProtocol: 3, maxProtocol: 3,
+              client: { id: 'openclaw-macos', version: '2026.3.24', platform: 'darwin', mode: 'ui', modelIdentifier: 'Mac14,2' },
+              device: { id: 'dev-123', publicKey: 'base64key', signature: 'base64sig', signedAt: Date.now(), nonce: 'abc' },
+              auth: { bootstrapToken: 'boot-tok', deviceToken: 'dev-tok' },
+              commands: ['status', 'restart'],
+              permissions: { 'agent.execute': true },
+              pathEnv: '/usr/local/bin',
+              caps: ['tool-events', 'streaming'],
+              scopes: ['operator.admin'],
+            },
+          }));
+        });
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.payload.type).toBe('hello-ok');
+    });
+  });
+
+  describe('OpenClaw method stubs', () => {
+    it('status returns ok', async () => {
+      server = await startGatewayServer(testPort);
+      const { ws } = await openClawClientConnect(testPort);
+      const res = await call(ws, 'status');
+      expect(res.ok).toBe(true);
+      ws.close();
+    });
+
+    it('models.list returns model array', async () => {
+      server = await startGatewayServer(testPort);
+      const { ws } = await openClawClientConnect(testPort);
+      const res = await call(ws, 'models.list');
+      expect(res.ok).toBe(true);
+      expect(Array.isArray(res.payload)).toBe(true);
+      expect(res.payload.length).toBeGreaterThan(0);
+      expect(res.payload[0]).toHaveProperty('id');
+      expect(res.payload[0]).toHaveProperty('provider');
+      ws.close();
+    });
+
+    it('gateway.identity.get returns LeanClaw info', async () => {
+      server = await startGatewayServer(testPort);
+      const { ws } = await openClawClientConnect(testPort);
+      const res = await call(ws, 'gateway.identity.get');
+      expect(res.ok).toBe(true);
+      expect(res.payload.name).toBe('LeanClaw');
+      expect(res.payload.runtime).toBe('leanclaw');
+      ws.close();
+    });
+
+    it('config.set returns graceful not-supported', async () => {
+      server = await startGatewayServer(testPort);
+      const { ws } = await openClawClientConnect(testPort);
+      const res = await call(ws, 'config.set', { key: 'test', value: 'val' });
+      expect(res.ok).toBe(true);
+      expect(res.payload.applied).toBe(false);
+      ws.close();
+    });
+
+    it('sessions.patch returns ok', async () => {
+      server = await startGatewayServer(testPort);
+      const { ws } = await openClawClientConnect(testPort);
+      const res = await call(ws, 'sessions.patch', {});
+      expect(res.ok).toBe(true);
+      ws.close();
+    });
+
+    it('cron.status returns running', async () => {
+      server = await startGatewayServer(testPort);
+      const { ws } = await openClawClientConnect(testPort);
+      const res = await call(ws, 'cron.status');
+      expect(res.ok).toBe(true);
+      expect(res.payload.running).toBe(true);
+      ws.close();
+    });
+
+    it('wake returns ok', async () => {
+      server = await startGatewayServer(testPort);
+      const { ws } = await openClawClientConnect(testPort);
+      const res = await call(ws, 'wake');
+      expect(res.ok).toBe(true);
+      ws.close();
+    });
+
+    it('tools.catalog returns empty array', async () => {
+      server = await startGatewayServer(testPort);
+      const { ws } = await openClawClientConnect(testPort);
+      const res = await call(ws, 'tools.catalog');
+      expect(res.ok).toBe(true);
+      expect(Array.isArray(res.payload)).toBe(true);
+      ws.close();
+    });
+  });
 });

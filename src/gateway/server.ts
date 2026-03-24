@@ -64,10 +64,46 @@ export function startGatewayServer(
     uptimeMs: Date.now() - startTime,
   }));
 
+  // Default stubs — runtime.ts overrides these with real data
   registerMethod('sessions.list', async () => []);
   registerMethod('config.get', async () => ({}));
   registerMethod('channels.status', async () => []);
   registerMethod('cron.list', async () => []);
+
+  // OpenClaw-compatible method stubs (return sensible defaults)
+  registerMethod('status', async () => ({ ok: true, uptimeMs: Date.now() - startTime }));
+  registerMethod('config.set', async () => ({ applied: false, reason: 'Config changes via gateway not supported — use LEANCLAW_* env vars' }));
+  registerMethod('config.patch', async () => ({ applied: false, reason: 'Config changes via gateway not supported — use LEANCLAW_* env vars' }));
+  registerMethod('config.schema', async () => ({ type: 'object', properties: {} }));
+  registerMethod('sessions.send', async () => ({ error: 'Use chat.send instead' }));
+  registerMethod('sessions.patch', async () => ({ ok: true }));
+  registerMethod('sessions.create', async () => ({ error: 'Sessions are created automatically on first message' }));
+  registerMethod('sessions.delete', async () => ({ ok: true }));
+  registerMethod('sessions.reset', async () => ({ ok: true }));
+  registerMethod('sessions.compact', async () => ({ ok: true }));
+  registerMethod('sessions.resolve', async () => null);
+  registerMethod('cron.status', async () => ({ running: true }));
+  registerMethod('channels.logout', async () => ({ ok: true }));
+  registerMethod('models.list', async () => [
+    { id: 'claude-sonnet-4-6', provider: 'anthropic', name: 'Claude Sonnet 4.6' },
+    { id: 'claude-opus-4-6', provider: 'anthropic', name: 'Claude Opus 4.6' },
+    { id: 'claude-haiku-4-5', provider: 'anthropic', name: 'Claude Haiku 4.5' },
+  ]);
+  registerMethod('tools.catalog', async () => []);
+  registerMethod('agents.list', async () => []);
+  registerMethod('logs.tail', async () => []);
+  registerMethod('wake', async () => ({ ok: true }));
+  registerMethod('gateway.identity.get', async () => ({
+    name: 'LeanClaw',
+    version: '0.1.0',
+    runtime: 'leanclaw',
+  }));
+  registerMethod('send', async (params) => {
+    // Legacy send — forward to chat.send
+    const handler = methods.get('chat.send');
+    if (handler) return handler(params, '');
+    return { error: 'chat.send not available' };
+  });
 
   // --- HTTP server ---
   const httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -208,6 +244,11 @@ export function startGatewayServer(
             maxPayload: MAX_PAYLOAD_BYTES,
             maxBufferedBytes: MAX_BUFFERED_BYTES,
             tickIntervalMs: TICK_INTERVAL_MS,
+          },
+          auth: {
+            deviceToken: connId,
+            role: client.role,
+            scopes: (params.scopes as string[]) || ['operator.admin'],
           },
         };
 

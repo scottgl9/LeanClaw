@@ -2,6 +2,15 @@
 
 LeanClaw is designed as a lightweight, security-first alternative to OpenClaw while maintaining protocol and plugin compatibility.
 
+## Compatibility Tiers
+
+| Tier | Status | Description |
+|------|--------|-------------|
+| **Protocol** | Full | OpenClaw clients can connect, authenticate, and call methods |
+| **Manifest** | Full | Plugin `openclaw.plugin.json` files load without modification |
+| **Methods** | Core + stubs | 12 real methods + 18 graceful stubs for commonly-called OpenClaw methods |
+| **Plugin Runtime** | Minimal | Plugins needing `openclaw/plugin-sdk/*` imports require adaptation |
+
 ## What's Compatible
 
 ### Gateway Protocol v3
@@ -31,22 +40,38 @@ LeanClaw accepts `openclaw.plugin.json` manifests with all standard fields:
 | Custom fields | Yes | Passthrough — not rejected |
 
 ### Gateway Methods
-LeanClaw implements the core OpenClaw gateway methods:
+LeanClaw implements core OpenClaw gateway methods plus graceful stubs:
 
-| Method | LeanClaw | OpenClaw | Notes |
-|--------|----------|----------|-------|
-| `health` | Yes | Yes | Returns uptimeMs |
-| `sessions.list` | Yes | Yes | Returns active sessions |
-| `config.get` | Yes | Yes | Returns configuration |
-| `channels.status` | Yes | Yes | Returns channel status |
-| `cron.list` | Yes | Yes | Returns scheduled tasks |
-| `cron.add` | Yes | Yes | Create task |
-| `cron.remove` | Yes | Yes | Delete task |
-| `cron.run` | Yes | Yes | Trigger task |
-| `chat.send` | Yes | Yes | Send message |
-| `chat.abort` | Yes | Yes | Abort agent |
-| `groups.list` | Yes | — | LeanClaw extension |
-| `providers.list` | Yes | — | LeanClaw extension |
+**Fully implemented (12):**
+
+| Method | Description |
+|--------|-------------|
+| `health` | Returns uptimeMs |
+| `sessions.list` | Active sessions |
+| `config.get` | Current configuration |
+| `channels.status` | Connected channels |
+| `cron.list` / `cron.add` / `cron.remove` / `cron.run` / `cron.status` | Task management |
+| `chat.send` / `chat.abort` | Message sending and abort |
+| `groups.list` / `providers.list` | LeanClaw extensions |
+
+**Graceful stubs (18) — return sensible defaults instead of errors:**
+
+| Method | Response |
+|--------|----------|
+| `status` | `{ ok: true, uptimeMs }` |
+| `config.set` / `config.patch` | `{ applied: false, reason: "Use env vars" }` |
+| `config.schema` | Empty schema |
+| `sessions.send` / `.patch` / `.create` / `.delete` / `.reset` / `.compact` / `.resolve` | Sensible defaults |
+| `models.list` | Claude model list |
+| `tools.catalog` | Empty array |
+| `agents.list` | Empty array |
+| `logs.tail` | Empty array |
+| `channels.logout` | `{ ok: true }` |
+| `wake` | `{ ok: true }` |
+| `gateway.identity.get` | `{ name: "LeanClaw", runtime: "leanclaw" }` |
+| `send` | Forwards to `chat.send` |
+
+**Not implemented (80+):** Node pairing, device management, skills, TTS/STT, approval workflows, browser requests, etc. These return "Unknown method" errors.
 
 ### HTTP Health Endpoints
 
