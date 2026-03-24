@@ -1,6 +1,6 @@
 # LeanClaw
 
-High-efficiency, security-first AI assistant runtime. Combines NanoClaw's container isolation with OpenClaw's gateway compatibility and plugin architecture. ~3,500 LOC TypeScript core.
+High-efficiency, security-first AI assistant runtime. Combines NanoClaw's container isolation with OpenClaw's gateway compatibility and plugin architecture. ~4,200 LOC TypeScript core.
 
 ## Architecture
 
@@ -38,6 +38,9 @@ Single Node.js process with in-process WebSocket gateway. Docker container isola
 | `src/queue/group-queue.ts` | Per-group message queue with concurrency limits |
 | `src/queue/collision.ts` | Heartbeat-cron collision avoidance |
 | `src/hooks/pre-run.ts` | Pre-run script hooks (exit 0/10/other) |
+| `src/router.ts` | Message formatting (XML) and outbound routing |
+| `src/ipc.ts` | IPC watcher for agent-to-host communication |
+| `src/cli.ts` | CLI entry point (start/config/version/help) |
 
 ## Security Model
 
@@ -63,7 +66,7 @@ Single Node.js process with in-process WebSocket gateway. Docker container isola
 ```bash
 npm run dev          # Run with hot reload (tsx)
 npm run build        # Compile TypeScript
-npm test             # Run tests (162 tests)
+npm test             # Run tests (186 tests)
 npm run test:watch   # Watch mode
 npm run typecheck    # Type check without emitting
 npm run lint         # ESLint

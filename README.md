@@ -78,7 +78,7 @@ Connect to `ws://host:port/` and follow the OpenClaw Protocol v3 handshake:
 2. Client sends `connect` request with protocol version and client info
 3. Server responds with `hello-ok` containing features and policy
 
-Available methods after authentication: `health`, `sessions.list`, `config.get`, `channels.status`, `cron.list`, plus any methods registered by plugins.
+Available methods after authentication: `health`, `sessions.list`, `config.get`, `channels.status`, `cron.list`, `groups.list`, `providers.list`, plus any methods registered by plugins.
 
 ## Plugins
 
@@ -115,8 +115,11 @@ Set `LEANCLAW_PLUGIN_DIR` to the parent directory containing your plugins.
 
 ```
 src/
-├── index.ts              # Entry point
+├── index.ts              # Entry point (library re-exports)
+├── cli.ts                # CLI (start/config/version/help)
 ├── runtime.ts            # Core lifecycle
+├── router.ts             # Message formatting and routing
+├── ipc.ts                # IPC watcher (agent-to-host)
 ├── types.ts              # Shared type definitions
 ├── config.ts             # Configuration with env var overrides
 ├── logger.ts             # Structured logging (pino)
@@ -158,7 +161,7 @@ src/
 ```bash
 npm run dev          # Run with hot reload
 npm run build        # Compile TypeScript
-npm test             # Run tests (162 tests)
+npm test             # Run tests (186 tests)
 npm run test:watch   # Watch mode
 npm run typecheck    # Type check without emitting
 npm run lint         # Lint
