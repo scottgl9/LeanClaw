@@ -199,13 +199,19 @@ export interface GatewayEvent {
 
 export interface PluginManifest {
   id: string;
-  name: string;
-  version: string;
+  name?: string;
+  version?: string;
   description?: string;
   main?: string;
   skills?: string[];
   channels?: string[];
   providers?: string[];
+  // OpenClaw-compatible fields
+  kind?: string;
+  providerAuthEnvVars?: Record<string, string[]>;
+  providerAuthChoices?: unknown[];
+  configSchema?: unknown;
+  [key: string]: unknown; // Allow additional OpenClaw fields
 }
 
 export interface PluginRecord {

@@ -102,14 +102,24 @@ export interface HelloOkPayload {
   server: { version: string; connId: string };
   features: { methods: string[]; events: string[] };
   snapshot: {
+    presence: unknown[];
+    health: Record<string, unknown>;
+    stateVersion: { presence: number; health: number };
     uptimeMs: number;
     authMode: string;
+    sessionDefaults?: Record<string, unknown>;
   };
   policy: {
     maxPayload: number;
     maxBufferedBytes: number;
     tickIntervalMs: number;
   };
+  auth?: {
+    deviceToken: string;
+    role: string;
+    scopes: string[];
+  };
+  canvasHostUrl?: string;
 }
 
 // --- Helpers ---

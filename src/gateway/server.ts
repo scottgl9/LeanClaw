@@ -6,7 +6,7 @@ import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { randomUUID } from 'crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 
-import { GATEWAY_HOST, GATEWAY_PORT } from '../config.js';
+import { GATEWAY_HOST, GATEWAY_PORT, GATEWAY_API_KEY } from '../config.js';
 import { logger } from '../logger.js';
 import { checkRateLimit, extractBearerToken, validateApiKey } from './auth.js';
 import { handleHealthRequest } from './health.js';
@@ -193,11 +193,16 @@ export function startGatewayServer(
           },
           features: {
             methods: Array.from(methods.keys()),
-            events: ['connect.challenge', 'tick', 'chat', 'agent', 'session.message', 'health'],
+            events: ['connect.challenge', 'tick', 'chat', 'agent', 'session.message', 'health', 'cron'],
           },
           snapshot: {
+            presence: Array.from(clients.values())
+              .filter((c) => c.authenticated)
+              .map((c) => ({ connId: c.connId, clientId: c.clientInfo?.id, mode: c.clientInfo?.mode })),
+            health: {},
+            stateVersion: { presence: clients.size, health: 1 },
             uptimeMs: Date.now() - startTime,
-            authMode: 'api-key',
+            authMode: GATEWAY_API_KEY ? 'api-key' : 'none',
           },
           policy: {
             maxPayload: MAX_PAYLOAD_BYTES,

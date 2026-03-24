@@ -15,14 +15,20 @@ import { PluginRegistry, getActiveRegistry } from './registry.js';
 
 const PluginManifestSchema = z.object({
   id: z.string().min(1),
-  name: z.string().min(1),
-  version: z.string().min(1),
+  name: z.string().optional(),
+  version: z.string().optional(),
   description: z.string().optional(),
   main: z.string().optional(),
   skills: z.array(z.string()).optional(),
   channels: z.array(z.string()).optional(),
   providers: z.array(z.string()).optional(),
-});
+  // OpenClaw-specific fields (accepted for compatibility)
+  kind: z.string().optional(),
+  providerAuthEnvVars: z.record(z.array(z.string())).optional(),
+  providerAuthChoices: z.array(z.any()).optional(),
+  configSchema: z.any().optional(),
+  uiHints: z.any().optional(),
+}).passthrough(); // Allow additional OpenClaw fields we don't explicitly handle
 
 // --- LRU cache ---
 
@@ -143,8 +149,8 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<PluginRe
   for (const { manifest, rootDir } of discovered) {
     const record: PluginRecord = {
       id: manifest.id,
-      name: manifest.name,
-      version: manifest.version,
+      name: manifest.name || manifest.id,
+      version: manifest.version || '0.0.0',
       status: 'loaded',
       rootDir,
       manifest,
