@@ -1,0 +1,8 @@
+{
+  "id": "echo-channel",
+  "name": "Echo Channel",
+  "version": "1.0.0",
+  "description": "Reference channel plugin for LeanClaw. Echoes messages back for testing the full message flow.",
+  "main": "index.js",
+  "channels": ["echo"]
+}
