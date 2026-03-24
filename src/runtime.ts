@@ -3,7 +3,7 @@
  * Core lifecycle: startup, message loop, task execution, shutdown.
  */
 import { POLL_INTERVAL, ASSISTANT_NAME, IDLE_TIMEOUT, TIMEZONE, TRIGGER_PATTERN, resolveGroupFolderPath, GATEWAY_PORT, GATEWAY_HOST, CONTAINER_IMAGE, MAX_CONCURRENT_CONTAINERS, DEFAULT_PROVIDER } from './config.js';
-import { initDatabase, getAllRegisteredGroups, getAllChats, getRouterState, setRouterState, getNewMessages, getMessagesSince, getAllTasks, logTaskRun, updateTask, updateTaskAfterRun, setRegisteredGroup } from './db.js';
+import { initDatabase, getAllRegisteredGroups, getAllChats, getRouterState, setRouterState, getNewMessages, getMessagesSince, getAllTasks, getTaskById, createTask, deleteTask, logTaskRun, updateTask, updateTaskAfterRun, setRegisteredGroup, storeMessage, storeChatMetadata } from './db.js';
 import { logger } from './logger.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans, runContainerAgent, writeTasksSnapshot, writeGroupsSnapshot, type ContainerOutput } from './agent/container.js';
 import { SessionManager } from './agent/session.js';
@@ -158,6 +158,99 @@ export async function startRuntime(): Promise<RuntimeState> {
     return listProviders().map((p) => ({
       id: p.id, name: p.name, configured: p.isConfigured(),
     }));
+  });
+
+  // Interactive methods
+  gateway.registerMethod('chat.send', async (params) => {
+    const { chatJid, text, sender, senderName } = params as { chatJid: string; text: string; sender?: string; senderName?: string };
+    if (!chatJid || !text) throw new Error('chatJid and text are required');
+
+    // Store the message in the database
+    const msgId = `gw-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const msg = {
+      id: msgId,
+      chat_jid: chatJid,
+      sender: sender || 'gateway',
+      sender_name: senderName || 'Gateway User',
+      content: text,
+      timestamp: new Date().toISOString(),
+    };
+    storeChatMetadata(chatJid, msg.timestamp);
+    storeMessage(msg);
+
+    // Try to pipe to active container first, otherwise enqueue
+    const sent = state!.queue.sendMessage(chatJid, text);
+    if (!sent) {
+      state!.queue.enqueueMessageCheck(chatJid);
+    }
+
+    return { messageId: msgId, piped: sent };
+  });
+
+  gateway.registerMethod('chat.abort', async (params) => {
+    const { chatJid } = params as { chatJid: string };
+    if (!chatJid) throw new Error('chatJid is required');
+    state!.queue.closeStdin(chatJid);
+    return { aborted: true };
+  });
+
+  gateway.registerMethod('cron.add', async (params) => {
+    const { groupFolder, chatJid, prompt, scheduleType, scheduleValue, contextMode } = params as {
+      groupFolder: string; chatJid: string; prompt: string;
+      scheduleType: 'cron' | 'interval' | 'once'; scheduleValue: string; contextMode?: string;
+    };
+    if (!groupFolder || !chatJid || !prompt || !scheduleType || !scheduleValue) {
+      throw new Error('groupFolder, chatJid, prompt, scheduleType, and scheduleValue are required');
+    }
+
+    const { CronExpressionParser } = await import('cron-parser');
+    let nextRun: string | null = null;
+    if (scheduleType === 'cron') {
+      const interval = CronExpressionParser.parse(scheduleValue, { tz: TIMEZONE });
+      nextRun = interval.next().toISOString();
+    } else if (scheduleType === 'interval') {
+      const ms = parseInt(scheduleValue, 10);
+      if (isNaN(ms) || ms <= 0) throw new Error('Invalid interval value');
+      nextRun = new Date(Date.now() + ms).toISOString();
+    } else if (scheduleType === 'once') {
+      const date = new Date(scheduleValue);
+      if (isNaN(date.getTime())) throw new Error('Invalid timestamp');
+      nextRun = date.toISOString();
+    }
+
+    const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    createTask({
+      id: taskId, group_folder: groupFolder, chat_jid: chatJid,
+      prompt, schedule_type: scheduleType, schedule_value: scheduleValue,
+      context_mode: (contextMode as 'group' | 'isolated') || 'isolated',
+      next_run: nextRun, status: 'active', created_at: new Date().toISOString(),
+    });
+
+    state?.gateway?.broadcast(makeEvent('cron', { action: 'added', taskId }));
+    return { taskId, nextRun };
+  });
+
+  gateway.registerMethod('cron.remove', async (params) => {
+    const { taskId } = params as { taskId: string };
+    if (!taskId) throw new Error('taskId is required');
+
+    const task = getTaskById(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+
+    deleteTask(taskId);
+    state?.gateway?.broadcast(makeEvent('cron', { action: 'removed', taskId }));
+    return { removed: true };
+  });
+
+  gateway.registerMethod('cron.run', async (params) => {
+    const { taskId } = params as { taskId: string };
+    if (!taskId) throw new Error('taskId is required');
+
+    const task = getTaskById(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+
+    queue.enqueueTask(task.chat_jid, task.id, () => executeScheduledTask(task, state!));
+    return { queued: true };
   });
 
   // 12. Wire processGroupMessages to queue

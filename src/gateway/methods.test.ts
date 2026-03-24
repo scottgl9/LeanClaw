@@ -7,7 +7,7 @@ import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import WebSocket from 'ws';
 import { startGatewayServer, type GatewayServer } from './server.js';
 import { PROTOCOL_VERSION } from './protocol.js';
-import { _initTestDatabase, createTask, setRegisteredGroup, setSession } from '../db.js';
+import { _initTestDatabase, createTask, getTaskById, setRegisteredGroup, setSession, storeMessage, storeChatMetadata } from '../db.js';
 
 let server: GatewayServer | null = null;
 let testPort = 29000;
@@ -191,6 +191,107 @@ describe('Wired gateway methods', () => {
     expect(res.payload).toHaveLength(2);
     expect(res.payload[0].id).toBe('anthropic');
     expect(res.payload[0].configured).toBe(true);
+    ws.close();
+  });
+});
+
+describe('Interactive gateway methods', () => {
+  it('chat.send stores message and returns id', async () => {
+    server = await startGatewayServer(testPort);
+
+    server.registerMethod('chat.send', async (params) => {
+      const { chatJid, text, sender, senderName } = params as any;
+      const msgId = `gw-${Date.now()}`;
+      storeChatMetadata(chatJid, new Date().toISOString());
+      storeMessage({
+        id: msgId, chat_jid: chatJid, sender: sender || 'gateway',
+        sender_name: senderName || 'Gateway', content: text, timestamp: new Date().toISOString(),
+      });
+      return { messageId: msgId, piped: false };
+    });
+
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'chat.send', {
+      chatJid: 'echo:test', text: 'Hello from gateway', sender: 'user1', senderName: 'Test User',
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.messageId).toBeDefined();
+    ws.close();
+  });
+
+  it('chat.send rejects missing params', async () => {
+    server = await startGatewayServer(testPort);
+
+    server.registerMethod('chat.send', async (params) => {
+      const { chatJid, text } = params as any;
+      if (!chatJid || !text) throw new Error('chatJid and text are required');
+      return { ok: true };
+    });
+
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'chat.send', { chatJid: 'echo:test' });
+
+    expect(res.ok).toBe(false);
+    ws.close();
+  });
+
+  it('cron.add creates a task', async () => {
+    server = await startGatewayServer(testPort);
+
+    server.registerMethod('cron.add', async (params) => {
+      const { groupFolder, chatJid, prompt, scheduleType, scheduleValue } = params as any;
+      const taskId = `task-${Date.now()}`;
+      createTask({
+        id: taskId, group_folder: groupFolder, chat_jid: chatJid,
+        prompt, schedule_type: scheduleType, schedule_value: scheduleValue,
+        context_mode: 'isolated', next_run: new Date(Date.now() + 60000).toISOString(),
+        status: 'active', created_at: new Date().toISOString(),
+      });
+      return { taskId };
+    });
+
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'cron.add', {
+      groupFolder: 'main', chatJid: 'echo:test', prompt: 'Test task',
+      scheduleType: 'interval', scheduleValue: '60000',
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.taskId).toBeDefined();
+
+    const task = getTaskById(res.payload.taskId);
+    expect(task).toBeDefined();
+    expect(task!.prompt).toBe('Test task');
+    ws.close();
+  });
+
+  it('cron.remove deletes a task', async () => {
+    const taskId = 'task-to-remove';
+    createTask({
+      id: taskId, group_folder: 'main', chat_jid: 'chat1',
+      prompt: 'Remove me', schedule_type: 'once', schedule_value: '2099-01-01T00:00:00Z',
+      context_mode: 'isolated', next_run: '2099-01-01T00:00:00Z',
+      status: 'active', created_at: new Date().toISOString(),
+    });
+
+    server = await startGatewayServer(testPort);
+
+    server.registerMethod('cron.remove', async (params) => {
+      const { taskId: id } = params as any;
+      const { deleteTask: dt, getTaskById: gt } = await import('../db.js');
+      const task = gt(id);
+      if (!task) throw new Error('Task not found');
+      dt(id);
+      return { removed: true };
+    });
+
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'cron.remove', { taskId });
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.removed).toBe(true);
+    expect(getTaskById(taskId)).toBeUndefined();
     ws.close();
   });
 });
