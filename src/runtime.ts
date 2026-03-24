@@ -2,12 +2,12 @@
  * LeanClaw Runtime
  * Core lifecycle: startup, message loop, shutdown.
  */
-import { POLL_INTERVAL } from './config.js';
-import { initDatabase, getAllRegisteredGroups, getRouterState, setRouterState, getNewMessages, getMessagesSince, storeChatMetadata, storeMessage } from './db.js';
+import { POLL_INTERVAL, ASSISTANT_NAME } from './config.js';
+import { initDatabase, getAllRegisteredGroups, getRouterState, setRouterState, getNewMessages, getAllTasks, logTaskRun, updateTask, updateTaskAfterRun } from './db.js';
 import { logger } from './logger.js';
-import { ensureContainerRuntimeRunning, cleanupOrphans } from './agent/container.js';
+import { ensureContainerRuntimeRunning, cleanupOrphans, runContainerAgent, writeTasksSnapshot } from './agent/container.js';
 import { SessionManager } from './agent/session.js';
-import { startSchedulerLoop, startHeartbeatLoop, stopSchedulerLoop, stopHeartbeatLoop } from './agent/scheduler.js';
+import { startSchedulerLoop, startHeartbeatLoop, stopSchedulerLoop, stopHeartbeatLoop, computeNextRun } from './agent/scheduler.js';
 import { GroupQueue } from './queue/group-queue.js';
 import { CollisionTracker } from './queue/collision.js';
 import { startGatewayServer, type GatewayServer } from './gateway/server.js';
@@ -15,7 +15,9 @@ import { setHealthProvider } from './gateway/health.js';
 import { loadPlugins } from './plugins/loader.js';
 import { setActiveRegistry } from './plugins/registry.js';
 import { getRegisteredChannelNames } from './channels/registry.js';
-import type { Channel, NewMessage, RegisteredGroup } from './types.js';
+import { getProviderContainerEnv } from './providers/base.js';
+import { resolveGroupFolderPath } from './config.js';
+import type { Channel, NewMessage, RegisteredGroup, ScheduledTask } from './types.js';
 
 export interface RuntimeState {
   gateway: GatewayServer | null;
@@ -100,7 +102,9 @@ export async function startRuntime(): Promise<RuntimeState> {
   // 10. Start scheduler
   startSchedulerLoop({
     enqueueTask: (chatJid, taskId, fn) => queue.enqueueTask(chatJid, taskId, fn),
-    runTask: async () => { /* Will be wired up with container runner */ },
+    runTask: async (task: ScheduledTask) => {
+      await executeScheduledTask(task, state!);
+    },
   });
 
   // 11. Start heartbeat
@@ -158,7 +162,7 @@ function startMessageLoop(s: RuntimeState): void {
         const { messages, newTimestamp } = getNewMessages(
           jids,
           s.lastTimestamp,
-          'Andy', // Will be configurable via ASSISTANT_NAME
+          ASSISTANT_NAME,
         );
 
         if (messages.length > 0) {
@@ -190,4 +194,80 @@ function startMessageLoop(s: RuntimeState): void {
 
 export function getRuntime(): RuntimeState | null {
   return state;
+}
+
+// --- Scheduled task execution ---
+
+async function executeScheduledTask(task: ScheduledTask, s: RuntimeState): Promise<void> {
+  const startTime = Date.now();
+
+  let groupDir: string;
+  try {
+    groupDir = resolveGroupFolderPath(task.group_folder);
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    updateTask(task.id, { status: 'paused' });
+    logger.error({ taskId: task.id, groupFolder: task.group_folder, error }, 'Task has invalid group folder');
+    logTaskRun({ task_id: task.id, run_at: new Date().toISOString(), duration_ms: Date.now() - startTime, status: 'error', result: null, error });
+    return;
+  }
+
+  const group = Object.values(s.registeredGroups).find((g) => g.folder === task.group_folder);
+  if (!group) {
+    logger.error({ taskId: task.id, groupFolder: task.group_folder }, 'Group not found for task');
+    logTaskRun({ task_id: task.id, run_at: new Date().toISOString(), duration_ms: Date.now() - startTime, status: 'error', result: null, error: `Group not found: ${task.group_folder}` });
+    return;
+  }
+
+  logger.info({ taskId: task.id, group: task.group_folder }, 'Running scheduled task');
+
+  const isMain = group.isMain === true;
+  const tasks = getAllTasks();
+  writeTasksSnapshot(task.group_folder, isMain, tasks.map((t) => ({
+    id: t.id, groupFolder: t.group_folder, prompt: t.prompt,
+    schedule_type: t.schedule_type, schedule_value: t.schedule_value,
+    status: t.status, next_run: t.next_run,
+  })));
+
+  const sessionId = task.context_mode === 'group' ? s.sessions.getSession(task.group_folder) : undefined;
+  const providerEnv = getProviderContainerEnv();
+
+  let result: string | null = null;
+  let error: string | null = null;
+
+  try {
+    const output = await runContainerAgent(
+      group,
+      {
+        prompt: task.prompt,
+        sessionId,
+        groupFolder: task.group_folder,
+        chatJid: task.chat_jid,
+        isMain,
+        isScheduledTask: true,
+        assistantName: ASSISTANT_NAME,
+      },
+      providerEnv,
+      (proc, containerName) => {
+        s.queue.registerProcess(task.chat_jid, proc, containerName, task.group_folder);
+      },
+    );
+
+    if (output.status === 'error') {
+      error = output.error || 'Unknown error';
+    } else if (output.result) {
+      result = output.result;
+    }
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+    logger.error({ taskId: task.id, error }, 'Task failed');
+  }
+
+  const durationMs = Date.now() - startTime;
+  logTaskRun({ task_id: task.id, run_at: new Date().toISOString(), duration_ms: durationMs, status: error ? 'error' : 'success', result, error });
+
+  const nextRun = computeNextRun(task);
+  const resultSummary = error ? `Error: ${error}` : result ? result.slice(0, 200) : 'Completed';
+  updateTaskAfterRun(task.id, nextRun, resultSummary);
+  logger.info({ taskId: task.id, durationMs }, 'Task completed');
 }
