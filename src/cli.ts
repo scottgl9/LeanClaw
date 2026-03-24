@@ -2,6 +2,10 @@
  * LeanClaw CLI
  * Basic command-line interface for operational management.
  */
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
 import { startRuntime } from './runtime.js';
 import { logger } from './logger.js';
 import { GATEWAY_PORT, GATEWAY_HOST, CONTAINER_IMAGE, MAX_CONCURRENT_CONTAINERS, DEFAULT_PROVIDER } from './config.js';
@@ -20,8 +24,10 @@ const commands: Record<string, () => Promise<void>> = {
   },
 
   version: async () => {
-    const pkg = await import('../package.json', { with: { type: 'json' } });
-    console.log(`leanclaw v${pkg.default.version}`);
+    const __dirname = path.dirname(fileURLToPath(import.meta.url));
+    const pkgPath = path.resolve(__dirname, '..', 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+    console.log(`leanclaw v${pkg.version}`);
   },
 
   help: async () => {

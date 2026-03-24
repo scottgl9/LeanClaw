@@ -2,10 +2,8 @@
  * LeanClaw Runtime
  * Core lifecycle: startup, message loop, task execution, shutdown.
  */
-import fs from 'fs';
-
 import { POLL_INTERVAL, ASSISTANT_NAME, IDLE_TIMEOUT, TIMEZONE, TRIGGER_PATTERN, resolveGroupFolderPath } from './config.js';
-import { initDatabase, getAllRegisteredGroups, getRouterState, setRouterState, getNewMessages, getMessagesSince, getAllTasks, logTaskRun, updateTask, updateTaskAfterRun, setSession, setRegisteredGroup } from './db.js';
+import { initDatabase, getAllRegisteredGroups, getRouterState, setRouterState, getNewMessages, getMessagesSince, getAllTasks, logTaskRun, updateTask, updateTaskAfterRun, setRegisteredGroup } from './db.js';
 import { logger } from './logger.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans, runContainerAgent, writeTasksSnapshot, writeGroupsSnapshot, type ContainerOutput } from './agent/container.js';
 import { SessionManager } from './agent/session.js';
