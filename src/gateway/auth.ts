@@ -1,0 +1,59 @@
+import { GATEWAY_API_KEY } from '../config.js';
+import { logger } from '../logger.js';
+
+// --- Rate limiting (sliding window per IP) ---
+
+interface RateLimitEntry {
+  timestamps: number[];
+}
+
+const rateLimits = new Map<string, RateLimitEntry>();
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 120;
+
+export function checkRateLimit(ip: string): boolean {
+  const now = Date.now();
+  let entry = rateLimits.get(ip);
+
+  if (!entry) {
+    entry = { timestamps: [] };
+    rateLimits.set(ip, entry);
+  }
+
+  // Prune old entries
+  entry.timestamps = entry.timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+  entry.timestamps.push(now);
+
+  if (entry.timestamps.length > RATE_LIMIT_MAX_REQUESTS) {
+    logger.warn({ ip, count: entry.timestamps.length }, 'Rate limit exceeded');
+    return false;
+  }
+
+  return true;
+}
+
+// Periodic cleanup of stale entries (unref so it doesn't keep process alive)
+const cleanupTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of rateLimits) {
+    entry.timestamps = entry.timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+    if (entry.timestamps.length === 0) rateLimits.delete(ip);
+  }
+}, RATE_LIMIT_WINDOW_MS);
+cleanupTimer.unref();
+
+// --- API key authentication ---
+
+export function validateApiKey(token: string | undefined): boolean {
+  if (!GATEWAY_API_KEY) return true; // No key configured = open
+  if (!token) return false;
+  return token === GATEWAY_API_KEY;
+}
+
+// --- Token extraction ---
+
+export function extractBearerToken(authHeader: string | undefined): string | undefined {
+  if (!authHeader) return undefined;
+  if (authHeader.startsWith('Bearer ')) return authHeader.slice(7);
+  return authHeader;
+}
