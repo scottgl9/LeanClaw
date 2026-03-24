@@ -2,8 +2,8 @@
  * LeanClaw Runtime
  * Core lifecycle: startup, message loop, task execution, shutdown.
  */
-import { POLL_INTERVAL, ASSISTANT_NAME, IDLE_TIMEOUT, TIMEZONE, TRIGGER_PATTERN, resolveGroupFolderPath } from './config.js';
-import { initDatabase, getAllRegisteredGroups, getRouterState, setRouterState, getNewMessages, getMessagesSince, getAllTasks, logTaskRun, updateTask, updateTaskAfterRun, setRegisteredGroup } from './db.js';
+import { POLL_INTERVAL, ASSISTANT_NAME, IDLE_TIMEOUT, TIMEZONE, TRIGGER_PATTERN, resolveGroupFolderPath, GATEWAY_PORT, GATEWAY_HOST, CONTAINER_IMAGE, MAX_CONCURRENT_CONTAINERS, DEFAULT_PROVIDER } from './config.js';
+import { initDatabase, getAllRegisteredGroups, getAllChats, getRouterState, setRouterState, getNewMessages, getMessagesSince, getAllTasks, logTaskRun, updateTask, updateTaskAfterRun, setRegisteredGroup } from './db.js';
 import { logger } from './logger.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans, runContainerAgent, writeTasksSnapshot, writeGroupsSnapshot, type ContainerOutput } from './agent/container.js';
 import { SessionManager } from './agent/session.js';
@@ -11,11 +11,12 @@ import { startSchedulerLoop, startHeartbeatLoop, stopSchedulerLoop, stopHeartbea
 import { GroupQueue } from './queue/group-queue.js';
 import { CollisionTracker } from './queue/collision.js';
 import { startGatewayServer, type GatewayServer } from './gateway/server.js';
+import { makeEvent } from './gateway/protocol.js';
 import { setHealthProvider } from './gateway/health.js';
 import { loadPlugins } from './plugins/loader.js';
 import { setActiveRegistry } from './plugins/registry.js';
 import { getRegisteredChannelNames } from './channels/registry.js';
-import { registerProvider, getProviderContainerEnv } from './providers/base.js';
+import { registerProvider, getProviderContainerEnv, listProviders } from './providers/base.js';
 import { AnthropicProvider } from './providers/anthropic.js';
 import { CopilotProvider } from './providers/copilot.js';
 import { formatMessages, formatOutbound, findChannel, routeOutbound } from './router.js';
@@ -118,7 +119,48 @@ export async function startRuntime(): Promise<RuntimeState> {
     messageLoopRunning: false,
   };
 
-  // 11. Wire processGroupMessages to queue
+  // 11. Wire gateway methods to runtime state
+  gateway.registerMethod('sessions.list', async () => {
+    const sessions = state!.sessions.getAllSessions();
+    return Object.entries(sessions).map(([folder, id]) => ({ folder, sessionId: id }));
+  });
+  gateway.registerMethod('config.get', async () => ({
+    gateway: { port: GATEWAY_PORT, host: GATEWAY_HOST },
+    container: { image: CONTAINER_IMAGE, maxConcurrent: MAX_CONCURRENT_CONTAINERS },
+    provider: DEFAULT_PROVIDER,
+    assistant: ASSISTANT_NAME,
+    groups: Object.keys(state!.registeredGroups).length,
+  }));
+  gateway.registerMethod('channels.status', async () => {
+    return state!.channels.map((c) => ({
+      name: c.name,
+      connected: c.isConnected(),
+    }));
+  });
+  gateway.registerMethod('cron.list', async () => {
+    return getAllTasks().map((t) => ({
+      id: t.id,
+      group: t.group_folder,
+      prompt: t.prompt.slice(0, 100),
+      type: t.schedule_type,
+      value: t.schedule_value,
+      status: t.status,
+      nextRun: t.next_run,
+      lastRun: t.last_run,
+    }));
+  });
+  gateway.registerMethod('groups.list', async () => {
+    return Object.entries(state!.registeredGroups).map(([jid, g]) => ({
+      jid, name: g.name, folder: g.folder, isMain: g.isMain || false,
+    }));
+  });
+  gateway.registerMethod('providers.list', async () => {
+    return listProviders().map((p) => ({
+      id: p.id, name: p.name, configured: p.isConfigured(),
+    }));
+  });
+
+  // 12. Wire processGroupMessages to queue
   queue.setProcessMessagesFn((chatJid) => processGroupMessages(chatJid, state!));
 
   // 12. Start scheduler
@@ -147,6 +189,8 @@ export async function startRuntime(): Promise<RuntimeState> {
       logger.info({ jid, folder: group.folder }, 'Group registered');
     },
     onTasksChanged: () => {
+      // Broadcast task update to gateway clients
+      state?.gateway?.broadcast(makeEvent('cron', { updated: true }));
       logger.debug('Tasks changed via IPC');
     },
   });
@@ -243,6 +287,13 @@ async function processGroupMessages(chatJid: string, s: RuntimeState): Promise<b
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
       }
+      // Broadcast to gateway WebSocket clients
+      s.gateway?.broadcast(makeEvent('chat', {
+        chatJid,
+        group: group.name,
+        result: output.result?.slice(0, 500),
+        status: output.status,
+      }));
       resetIdleTimer();
     }
     if (output.status === 'success') {
@@ -289,7 +340,14 @@ async function runAgent(
     schedule_type: t.schedule_type, schedule_value: t.schedule_value,
     status: t.status, next_run: t.next_run,
   })));
-  writeGroupsSnapshot(group.folder, isMain, []);
+  const allChats = getAllChats();
+  const availableGroups = allChats.map((c) => ({
+    jid: c.jid,
+    name: c.name,
+    lastActivity: c.last_message_time,
+    isRegistered: c.jid in s.registeredGroups,
+  }));
+  writeGroupsSnapshot(group.folder, isMain, availableGroups);
 
   // Wrap onOutput to track session ID
   const wrappedOnOutput = onOutput

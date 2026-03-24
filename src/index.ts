@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'url';
 import { startRuntime } from './runtime.js';
 
 // Re-exports for library consumers
@@ -8,8 +9,8 @@ export * from './config.js';
 export { startRuntime, getRuntime } from './runtime.js';
 export { startGatewayServer } from './gateway/server.js';
 
-// Direct-run guard
-const isDirectRun = process.argv[1]?.endsWith('index.js') || process.argv[1]?.endsWith('index.ts');
+// Direct-run guard (ESM-compatible)
+const isDirectRun = process.argv[1] === fileURLToPath(import.meta.url);
 if (isDirectRun) {
   startRuntime().catch((err) => {
     console.error('Fatal error starting LeanClaw:', err);

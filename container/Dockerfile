@@ -17,8 +17,8 @@ WORKDIR /app
 # Copy agent-runner source
 COPY agent-runner/ /app/
 
-# Install agent dependencies
-RUN npm install --production 2>/dev/null || true
+# Install agent dependencies (fail build on error)
+RUN npm install --omit=dev
 
 USER node
 
