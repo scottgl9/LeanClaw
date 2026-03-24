@@ -1,3 +1,9 @@
+openclaw/
+nanoclaw/
+store/
+data/
+groups/
+
 # Logs
 logs
 *.log
