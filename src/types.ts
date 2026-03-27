@@ -211,6 +211,13 @@ export interface PluginManifest {
   providerAuthEnvVars?: Record<string, string[]>;
   providerAuthChoices?: unknown[];
   configSchema?: unknown;
+  contracts?: {
+    speech?: { tts?: boolean; stt?: boolean };
+    mediaUnderstanding?: boolean;
+    imageGeneration?: boolean;
+    webSearch?: boolean;
+    toolOwnership?: string[];
+  };
   [key: string]: unknown; // Allow additional OpenClaw fields
 }
 

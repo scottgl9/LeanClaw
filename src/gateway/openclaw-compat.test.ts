@@ -344,6 +344,68 @@ describe('OpenClaw Protocol v3 Compatibility', () => {
     });
   });
 
+  describe('Snapshot authMode', () => {
+    it('authMode is a valid string value', async () => {
+      server = await startGatewayServer(testPort);
+      const { ws, helloOk } = await openClawClientConnect(testPort);
+
+      const authMode = helloOk.payload.snapshot.authMode;
+      expect(typeof authMode).toBe('string');
+      expect(['none', 'api-key', 'token', 'pairing']).toContain(authMode);
+      ws.close();
+    });
+  });
+
+  describe('Tick events', () => {
+    it('tick events have incrementing seq numbers', async () => {
+      // Start server with short tick interval for testing
+      server = await startGatewayServer(testPort);
+      const { ws } = await openClawClientConnect(testPort);
+
+      // Collect tick events by broadcasting manually
+      const ticks: any[] = [];
+      const tickPromise = new Promise<void>((resolve) => {
+        ws.on('message', (data) => {
+          const msg = JSON.parse(data.toString());
+          if (msg.type === 'event' && msg.event === 'tick') {
+            ticks.push(msg);
+            if (ticks.length >= 2) resolve();
+          }
+        });
+      });
+
+      // Manually broadcast tick events via the server
+      server!.broadcast({ type: 'event', event: 'tick', payload: { ts: Date.now() } });
+      server!.broadcast({ type: 'event', event: 'tick', payload: { ts: Date.now() } });
+
+      await tickPromise;
+
+      expect(ticks.length).toBeGreaterThanOrEqual(2);
+      expect(typeof ticks[0].seq).toBe('number');
+      expect(typeof ticks[1].seq).toBe('number');
+      expect(ticks[1].seq).toBeGreaterThan(ticks[0].seq);
+      ws.close();
+    });
+  });
+
+  describe('Connect challenge nonce', () => {
+    it('challenge nonce is a unique string per connection', async () => {
+      server = await startGatewayServer(testPort);
+
+      // Connect two clients and verify different nonces
+      const { ws: ws1, challenge: c1 } = await openClawClientConnect(testPort);
+      const { ws: ws2, challenge: c2 } = await openClawClientConnect(testPort);
+
+      expect(typeof c1.payload.nonce).toBe('string');
+      expect(typeof c2.payload.nonce).toBe('string');
+      expect(c1.payload.nonce.length).toBeGreaterThan(0);
+      expect(c1.payload.nonce).not.toBe(c2.payload.nonce);
+
+      ws1.close();
+      ws2.close();
+    });
+  });
+
   describe('OpenClaw method stubs', () => {
     it('status returns ok', async () => {
       server = await startGatewayServer(testPort);

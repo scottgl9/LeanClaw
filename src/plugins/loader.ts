@@ -28,6 +28,16 @@ const PluginManifestSchema = z.object({
   providerAuthChoices: z.array(z.any()).optional(),
   configSchema: z.any().optional(),
   uiHints: z.any().optional(),
+  contracts: z.object({
+    speech: z.object({
+      tts: z.boolean().optional(),
+      stt: z.boolean().optional(),
+    }).optional(),
+    mediaUnderstanding: z.boolean().optional(),
+    imageGeneration: z.boolean().optional(),
+    webSearch: z.boolean().optional(),
+    toolOwnership: z.array(z.string()).optional(),
+  }).optional(),
 }).passthrough(); // Allow additional OpenClaw fields we don't explicitly handle
 
 // --- LRU cache ---

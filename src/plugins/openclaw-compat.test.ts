@@ -169,6 +169,45 @@ describe('OpenClaw plugin manifest compatibility', () => {
     expect(registry.get('memory-lancedb')).toBeDefined();
   });
 
+  it('loads plugin with contracts field (capability snapshot)', async () => {
+    writePlugin('multimodal', {
+      id: 'multimodal',
+      providers: ['multimodal'],
+      contracts: {
+        speech: { tts: true, stt: false },
+        mediaUnderstanding: true,
+        imageGeneration: true,
+        webSearch: false,
+        toolOwnership: ['image-gen', 'tts'],
+      },
+    });
+
+    const registry = await loadPlugins({ dirs: [tmpDir], cache: false });
+    const plugin = registry.get('multimodal');
+    expect(plugin).toBeDefined();
+    expect(plugin!.manifest.contracts).toBeDefined();
+    expect(plugin!.manifest.contracts!.speech).toEqual({ tts: true, stt: false });
+    expect(plugin!.manifest.contracts!.mediaUnderstanding).toBe(true);
+    expect(plugin!.manifest.contracts!.imageGeneration).toBe(true);
+    expect(plugin!.manifest.contracts!.webSearch).toBe(false);
+    expect(plugin!.manifest.contracts!.toolOwnership).toEqual(['image-gen', 'tts']);
+  });
+
+  it('loads plugin with partial contracts field', async () => {
+    writePlugin('speech-only', {
+      id: 'speech-only',
+      contracts: {
+        speech: { tts: true },
+      },
+    });
+
+    const registry = await loadPlugins({ dirs: [tmpDir], cache: false });
+    const plugin = registry.get('speech-only');
+    expect(plugin).toBeDefined();
+    expect(plugin!.manifest.contracts!.speech!.tts).toBe(true);
+    expect(plugin!.manifest.contracts!.mediaUnderstanding).toBeUndefined();
+  });
+
   it('preserves unknown OpenClaw fields via passthrough', async () => {
     writePlugin('custom', {
       id: 'custom',
