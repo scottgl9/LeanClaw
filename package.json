@@ -1,12 +1,34 @@
 {
   "name": "leanclaw",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
   "description": "High-efficiency, security-first AI assistant runtime built for fast local execution, low resource usage, and reliable automation.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
     "leanclaw": "dist/cli.js"
   },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE",
+    ".env.example"
+  ],
+  "keywords": [
+    "openclaw",
+    "ai-assistant",
+    "llm",
+    "local-ai",
+    "automation",
+    "gateway",
+    "agent",
+    "typescript"
+  ],
+  "homepage": "https://github.com/scottgl9/LeanClaw",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/scottgl9/LeanClaw.git"
+  },
+  "license": "Apache-2.0",
   "scripts": {
     "build": "tsc",
     "start": "node dist/cli.js start",

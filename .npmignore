@@ -1,0 +1,30 @@
+# Source
+src/
+
+# Test artifacts in dist
+dist/**/*.test.js
+dist/**/*.test.d.ts
+dist/**/*.test.js.map
+dist/**/*.test.d.ts.map
+
+# Dev files
+.github/
+container/
+examples/
+docs/
+*.tsbuildinfo
+
+# Config
+tsconfig.json
+vitest.config.ts
+.prettierrc
+.eslintrc*
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Other
+node_modules/
+*.log
