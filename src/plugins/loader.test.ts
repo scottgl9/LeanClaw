@@ -284,6 +284,41 @@ describe('Registry caching', () => {
   });
 });
 
+describe('jiti TypeScript loader', () => {
+  it('loads .ts plugin file via jiti', async () => {
+    const fixtureDir = path.resolve(__dirname, '../../e2e/fixtures/plugins');
+    const registry = await loadPlugins({ dirs: [fixtureDir], cache: false });
+    const tsPlugin = registry.get('ts-register-plugin');
+    expect(tsPlugin).toBeDefined();
+    expect(tsPlugin!.status).toBe('loaded');
+    expect(tsPlugin!.runtime).toBeDefined();
+  });
+
+  it('calls register(api) and registers tools', async () => {
+    const fixtureDir = path.resolve(__dirname, '../../e2e/fixtures/plugins');
+    const registry = await loadPlugins({ dirs: [fixtureDir], cache: false });
+    const tools = registry.getTools();
+    const testTool = tools.find((t) => t.name === 'test_tool');
+    expect(testTool).toBeDefined();
+    expect(testTool!.pluginId).toBe('ts-register-plugin');
+    expect(testTool!.description).toBe('A test tool for compatibility testing');
+  });
+
+  it('plugin register() error does not crash other plugins', async () => {
+    const fixtureDir = path.resolve(__dirname, '../../e2e/fixtures/plugins');
+    const registry = await loadPlugins({ dirs: [fixtureDir], cache: false });
+    // bad-register-plugin throws in register() but should still be loaded
+    const bad = registry.get('bad-register-plugin');
+    expect(bad).toBeDefined();
+    expect(bad!.status).toBe('loaded');
+    // ts-register-plugin should still have loaded and registered its tool
+    const tools = registry.getTools();
+    expect(tools.find((t) => t.name === 'test_tool')).toBeDefined();
+    // Other non-TS plugins should also still be present
+    expect(registry.get('echo-plugin')).toBeDefined();
+  });
+});
+
 describe('Error handling', () => {
   it('invalid JSON manifest logs warning and continues loading other plugins', async () => {
     const badDir = path.join(tmpDir, 'bad-json');

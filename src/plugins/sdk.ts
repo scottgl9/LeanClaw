@@ -16,3 +16,5 @@ export type {
 
 export { PluginRegistry, getActiveRegistry } from './registry.js';
 export { loadPlugins, getPlugin, listPlugins } from './loader.js';
+export { createPluginApi } from './plugin-api.js';
+export type { PluginApi, RegisteredTool } from './plugin-api.js';

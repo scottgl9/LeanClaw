@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { logger } from '../logger.js';
 import type { PluginManifest, PluginRecord } from '../types.js';
 import { PluginRegistry, getActiveRegistry } from './registry.js';
+import { createPluginApi } from './plugin-api.js';
 
 // --- Manifest schema ---
 
@@ -133,6 +134,17 @@ function discoverPlugins(dirs: string[]): Array<{ manifest: PluginManifest; root
   return discovered;
 }
 
+// --- Module loading (jiti for .ts, native import for .js) ---
+
+async function loadModuleFile(mainPath: string): Promise<unknown> {
+  if (mainPath.endsWith('.ts')) {
+    const { createJiti } = await import('jiti');
+    const jiti = createJiti(import.meta.url);
+    return await jiti.import(mainPath);
+  }
+  return await import(mainPath);
+}
+
 // --- Loader ---
 
 export interface LoadPluginsOptions {
@@ -171,10 +183,22 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<PluginRe
       const mainPath = path.join(rootDir, manifest.main);
       if (fs.existsSync(mainPath)) {
         try {
-          // Dynamic import for ESM compatibility
-          const module = await import(mainPath);
+          const module = await loadModuleFile(mainPath);
           record.runtime = module;
           logger.debug({ pluginId: manifest.id, main: manifest.main }, 'Plugin module loaded');
+
+          // Call register(api) if the plugin exports it
+          try {
+            const entry = (module as any)?.default ?? module;
+            if (typeof entry?.register === 'function') {
+              const api = createPluginApi(manifest.id, (tool) => registry.registerTool(tool));
+              await entry.register(api);
+              logger.info({ pluginId: manifest.id }, 'Plugin registered via SDK');
+            }
+          } catch (err) {
+            logger.error({ pluginId: manifest.id, err }, 'Plugin register() failed');
+            // Do NOT mark plugin as error - partial load is ok
+          }
         } catch (err) {
           record.status = 'error';
           record.error = err instanceof Error ? err.message : String(err);

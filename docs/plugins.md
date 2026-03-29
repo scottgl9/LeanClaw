@@ -105,7 +105,42 @@ LeanClaw accepts all standard OpenClaw plugin manifest fields — including fiel
   ```
 - Additional custom fields are preserved via passthrough
 
-Existing OpenClaw plugins load without manifest modifications. The plugin's runtime code may need adaptation if it uses OpenClaw-specific SDK internals (e.g., `api.registerTool()`, `api.registerChannel()`).
+Existing OpenClaw plugins load without manifest modifications.
+
+## TypeScript Plugin Support
+
+LeanClaw supports `.ts` plugin entry points via [jiti](https://github.com/nicolo-ribaudo/jiti) (same loader OpenClaw uses). Just set `"main": "index.ts"` in your `openclaw.plugin.json` — no pre-compilation needed.
+
+```json
+{
+  "id": "my-ts-plugin",
+  "name": "My TypeScript Plugin",
+  "version": "1.0.0",
+  "main": "index.ts"
+}
+```
+
+## Plugin SDK — register(api)
+
+Plugins that export a `register(api)` function will be called during load. The `api` object provides methods to register tools, channels, providers, and more:
+
+```typescript
+const plugin = {
+  register(api) {
+    api.registerTool({
+      name: 'my_tool',
+      description: 'Does something useful',
+      parameters: { type: 'object', properties: { input: { type: 'string' } } },
+      execute: async (toolCallId, params) => {
+        return { result: params.input };
+      },
+    });
+  },
+};
+export default plugin;
+```
+
+Registered tools appear in `tools.catalog` via the gateway WebSocket API. If `register()` throws, the error is logged but the plugin is still considered loaded (partial load is acceptable).
 
 ### Plugin Compatibility Testing
 
