@@ -84,14 +84,38 @@ The `opts` object provides:
 
 ## OpenClaw Compatibility
 
-LeanClaw accepts all standard OpenClaw plugin manifest fields:
+LeanClaw accepts all standard OpenClaw plugin manifest fields — including fields that LeanClaw doesn't act on but preserves for forward compatibility:
+
 - `providerAuthEnvVars` — Environment variable names for provider authentication
 - `providerAuthChoices` — Auth method selection for UIs
 - `configSchema` — JSON Schema for plugin configuration
 - `uiHints` — Frontend hints for config fields
+- `kind` — Plugin kind (e.g., `memory`, `provider`, `channel`)
+- `contracts` — OpenClaw capability contracts (preserved, not enforced):
+  ```json
+  {
+    "contracts": {
+      "speech": { "tts": true, "stt": false },
+      "mediaUnderstanding": false,
+      "imageGeneration": false,
+      "webSearch": false,
+      "toolOwnership": ["my-tool"]
+    }
+  }
+  ```
 - Additional custom fields are preserved via passthrough
 
-This means existing OpenClaw plugins can be loaded by LeanClaw without modification to their manifests. The plugin's runtime code may need adaptation if it uses OpenClaw-specific SDK internals.
+Existing OpenClaw plugins load without manifest modifications. The plugin's runtime code may need adaptation if it uses OpenClaw-specific SDK internals (e.g., `api.registerTool()`, `api.registerChannel()`).
+
+### Plugin Compatibility Testing
+
+LeanClaw's test suite validates manifest compatibility:
+
+```bash
+npm test -- --grep "plugin"
+```
+
+Tests cover: manifest discovery, all OpenClaw optional fields, `leanclaw.plugin.json` format, invalid manifests (rejected gracefully), registry caching, SDK exports.
 
 ## Example Plugin
 

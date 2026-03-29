@@ -75,13 +75,26 @@ export function startGatewayServer(
   registerMethod('config.set', async () => ({ applied: false, reason: 'Config changes via gateway not supported — use LEANCLAW_* env vars' }));
   registerMethod('config.patch', async () => ({ applied: false, reason: 'Config changes via gateway not supported — use LEANCLAW_* env vars' }));
   registerMethod('config.schema', async () => ({ type: 'object', properties: {} }));
-  registerMethod('sessions.send', async (params) => {
+  registerMethod('sessions.send', async (params, clientId) => {
     const p = params as any;
-    if (p?.chatJid && p?.text) {
-      const chatSend = methods.get('chat.send');
-      if (chatSend) return chatSend(params, '');
+    const chatSend = methods.get('chat.send');
+    if (!chatSend) return { ok: false, error: 'chat.send not available' };
+
+    let chatJid = p?.chatJid;
+
+    // If no chatJid but sessionKey provided, try to resolve via sessions.list
+    if (!chatJid && p?.sessionKey) {
+      const sessionsList = methods.get('sessions.list');
+      if (sessionsList) {
+        const sessions = await sessionsList({}, clientId || '');
+        const match = (sessions as any[])?.find(
+          (s: any) => s.sessionId === p.sessionKey || s.folder === p.sessionKey,
+        );
+        if (match?.chatJid) chatJid = match.chatJid;
+      }
     }
-    return { ok: false, error: 'sessions.send not supported — use chat.send with {chatJid, text}' };
+
+    return chatSend({ ...p, chatJid }, clientId || '');
   });
   registerMethod('sessions.patch', async () => ({ ok: true }));
   registerMethod('sessions.create', async () => ({ error: 'Sessions are created automatically on first message' }));
@@ -140,6 +153,22 @@ export function startGatewayServer(
     version: '0.1.0',
     runtime: 'leanclaw',
   }));
+  registerMethod('device.token.rotate', async () => ({
+    ok: true,
+    deviceToken: randomUUID(),
+    rotatedAt: Date.now(),
+  }));
+
+  registerMethod('device.token.revoke', async () => ({
+    ok: true,
+    revoked: true,
+  }));
+
+  registerMethod('skills.bins', async () => ({
+    bins: [],
+    version: '0.0.0',
+  }));
+
   registerMethod('send', async (params) => {
     // Legacy send — forward to chat.send
     const handler = methods.get('chat.send');

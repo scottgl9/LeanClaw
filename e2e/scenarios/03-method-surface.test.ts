@@ -153,15 +153,15 @@ describe('Scenario 3: Method Surface Completeness', () => {
   });
 
   // 3.7 sessions.send
-  it('3.7 sessions.send returns response (stub redirects to chat.send)', async () => {
+  it('3.7 sessions.send routes to chat.send with chatJid+text', async () => {
     server = await startServerWithStubs(testPort);
     const { ws } = await openClawConnect(testPort);
 
-    const res = await call(ws, 'sessions.send', { sessionId: 'test', text: 'hello' });
+    const res = await call(ws, 'sessions.send', { chatJid: 'test-jid', text: 'hello' });
     assertResponseFrame(res);
     expect(res.ok).toBe(true);
-    // GAP: LeanClaw returns { error: 'Use chat.send instead' }, OpenClaw would route to session
-    expect(res.payload).toBeDefined();
+    expect(res.payload.messageId).toBeDefined();
+    expect(typeof res.payload.piped).toBe('boolean');
 
     ws.close();
   });
@@ -539,9 +539,52 @@ describe('Scenario 3: Method Surface Completeness', () => {
   });
 });
 
-// --- Additional gap documentation for methods not in the 34-test surface ---
+// --- Additional methods beyond the 34-test surface ---
 
 describe('Scenario 3: Additional Methods', () => {
+  // device.token.rotate
+  it('device.token.rotate returns {ok:true, deviceToken:string}', async () => {
+    server = await startServerWithStubs(testPort);
+    const { ws } = await openClawConnect(testPort);
+
+    const res = await call(ws, 'device.token.rotate');
+    assertResponseFrame(res);
+    expect(res.ok).toBe(true);
+    expect(typeof res.payload.deviceToken).toBe('string');
+    expect(res.payload.deviceToken.length).toBeGreaterThan(0);
+    expect(typeof res.payload.rotatedAt).toBe('number');
+
+    ws.close();
+  });
+
+  // device.token.revoke
+  it('device.token.revoke returns {ok:true, revoked:true}', async () => {
+    server = await startServerWithStubs(testPort);
+    const { ws } = await openClawConnect(testPort);
+
+    const res = await call(ws, 'device.token.revoke');
+    assertResponseFrame(res);
+    expect(res.ok).toBe(true);
+    expect(res.payload.revoked).toBe(true);
+
+    ws.close();
+  });
+
+  // skills.bins
+  it('skills.bins returns {bins:[], version:string}', async () => {
+    server = await startServerWithStubs(testPort);
+    const { ws } = await openClawConnect(testPort);
+
+    const res = await call(ws, 'skills.bins');
+    assertResponseFrame(res);
+    expect(res.ok).toBe(true);
+    expect(Array.isArray(res.payload.bins)).toBe(true);
+    expect(res.payload.bins).toHaveLength(0);
+    expect(typeof res.payload.version).toBe('string');
+
+    ws.close();
+  });
+
   // tools.effective
   it('tools.effective returns {tools:[], sessionKey}', async () => {
     server = await startServerWithStubs(testPort);

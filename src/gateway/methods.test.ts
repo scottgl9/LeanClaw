@@ -371,6 +371,84 @@ describe('Phase 4 gateway methods (system-presence, system-event, agent, tools.e
     ws.close();
   });
 
+  it('device.token.rotate returns new UUID deviceToken', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'device.token.rotate');
+
+    expect(res.ok).toBe(true);
+    expect(typeof res.payload.deviceToken).toBe('string');
+    expect(res.payload.deviceToken).toMatch(/^[0-9a-f]{8}-/);
+    expect(typeof res.payload.rotatedAt).toBe('number');
+
+    // Each call should return a different token
+    const res2 = await call(ws, 'device.token.rotate');
+    expect(res2.payload.deviceToken).not.toBe(res.payload.deviceToken);
+    ws.close();
+  });
+
+  it('device.token.revoke returns {ok:true, revoked:true}', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'device.token.revoke', { deviceToken: 'some-token' });
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.ok).toBe(true);
+    expect(res.payload.revoked).toBe(true);
+    ws.close();
+  });
+
+  it('skills.bins returns {bins:[], version:string}', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'skills.bins');
+
+    expect(res.ok).toBe(true);
+    expect(Array.isArray(res.payload.bins)).toBe(true);
+    expect(res.payload.bins).toHaveLength(0);
+    expect(res.payload.version).toBe('0.0.0');
+    ws.close();
+  });
+
+  it('POST /health returns 405 Method Not Allowed', async () => {
+    server = await startGatewayServer(testPort);
+    const res = await fetch(`http://127.0.0.1:${testPort}/health`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(405);
+    expect(res.headers.get('allow')).toBe('GET, HEAD');
+  });
+
+  it('features.methods includes device.token.rotate, device.token.revoke, skills.bins', async () => {
+    server = await startGatewayServer(testPort);
+
+    const helloOk = await new Promise<any>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}`);
+      ws.on('error', reject);
+      ws.once('message', () => {
+        ws.once('message', (data) => {
+          resolve(JSON.parse(data.toString()));
+          ws.close();
+        });
+        ws.send(JSON.stringify({
+          type: 'req', id: 'feat-methods', method: 'connect',
+          params: {
+            minProtocol: PROTOCOL_VERSION, maxProtocol: PROTOCOL_VERSION,
+            client: { id: 'feat-test', version: '1.0', platform: 'linux', mode: 'test' },
+          },
+        }));
+      });
+    });
+
+    const methodsList: string[] = helloOk.payload.features.methods;
+    expect(methodsList).toContain('device.token.rotate');
+    expect(methodsList).toContain('device.token.revoke');
+    expect(methodsList).toContain('skills.bins');
+  });
+
   it('features.events includes presence, system, exec.approval.requested, shutdown', async () => {
     server = await startGatewayServer(testPort);
 
