@@ -38,9 +38,9 @@
     "format:check": "prettier --check \"src/**/*.ts\"",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "e2e": "vitest run e2e/",
+    "test": "vitest run --pool=forks --no-file-parallelism",
+    "test:watch": "vitest --pool=forks --no-file-parallelism",
+    "e2e": "vitest run e2e/ --pool=forks --no-file-parallelism",
     "e2e:scorecard": "tsx e2e/scorecard.ts"
   },
   "dependencies": {
