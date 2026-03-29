@@ -4,6 +4,10 @@ store/
 data/
 groups/
 
+# E2E artifacts (generated per-run)
+e2e/artifacts/*
+!e2e/artifacts/.gitkeep
+
 # Logs
 logs
 *.log

@@ -1,0 +1,14 @@
+{
+  "minProtocol": 3,
+  "maxProtocol": 3,
+  "client": {
+    "id": "openclaw-ui",
+    "version": "2026.3.28",
+    "platform": "darwin",
+    "mode": "ui",
+    "modelIdentifier": "Mac14,2"
+  },
+  "role": "operator",
+  "scopes": ["operator.admin", "ui.read"],
+  "caps": ["tool-events", "streaming", "canvas"]
+}
