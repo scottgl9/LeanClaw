@@ -1,0 +1,18 @@
+{
+  "minProtocol": 3,
+  "maxProtocol": 3,
+  "client": {
+    "id": "openclaw-node",
+    "version": "2026.3.28",
+    "platform": "linux",
+    "mode": "node"
+  },
+  "role": "node",
+  "scopes": ["node.exec"],
+  "caps": ["tool-events", "exec"],
+  "commands": ["status", "restart", "exec"],
+  "permissions": {
+    "agent.execute": true,
+    "shell.run": true
+  }
+}

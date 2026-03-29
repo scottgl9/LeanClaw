@@ -39,7 +39,9 @@
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "e2e": "vitest run e2e/",
+    "e2e:scorecard": "tsx e2e/scorecard.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1",

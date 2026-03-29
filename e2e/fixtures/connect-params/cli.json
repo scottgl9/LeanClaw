@@ -1,0 +1,13 @@
+{
+  "minProtocol": 3,
+  "maxProtocol": 3,
+  "client": {
+    "id": "openclaw-cli",
+    "version": "2026.3.28",
+    "platform": "linux",
+    "mode": "cli"
+  },
+  "role": "operator",
+  "scopes": ["operator.admin"],
+  "caps": ["tool-events"]
+}
