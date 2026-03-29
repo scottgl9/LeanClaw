@@ -230,4 +230,5 @@ export interface PluginRecord {
   manifest: PluginManifest;
   runtime?: unknown;
   error?: string;
+  tools?: Array<{ name: string; description: string; pluginId: string }>;
 }

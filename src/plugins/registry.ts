@@ -1,8 +1,10 @@
 import type { PluginRecord } from '../types.js';
+import type { RegisteredTool } from './plugin-api.js';
 import { logger } from '../logger.js';
 
 export class PluginRegistry {
   private plugins = new Map<string, PluginRecord>();
+  private allTools: RegisteredTool[] = [];
 
   register(plugin: PluginRecord): void {
     this.plugins.set(plugin.id, plugin);
@@ -19,7 +21,10 @@ export class PluginRegistry {
 
   unload(id: string): boolean {
     const existed = this.plugins.delete(id);
-    if (existed) logger.info({ pluginId: id }, 'Plugin unloaded');
+    if (existed) {
+      this.allTools = this.allTools.filter((t) => t.pluginId !== id);
+      logger.info({ pluginId: id }, 'Plugin unloaded');
+    }
     return existed;
   }
 
@@ -29,6 +34,16 @@ export class PluginRegistry {
 
   clear(): void {
     this.plugins.clear();
+    this.allTools = [];
+  }
+
+  registerTool(tool: RegisteredTool): void {
+    this.allTools.push(tool);
+    logger.info({ pluginId: tool.pluginId, tool: tool.name }, 'Tool registered');
+  }
+
+  getTools(): RegisteredTool[] {
+    return this.allTools;
   }
 }
 

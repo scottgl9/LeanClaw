@@ -42,6 +42,7 @@ export interface GatewayServer {
   broadcast(event: EventFrame): void;
   getClients(): Map<string, GatewayClient>;
   registerMethod(method: string, handler: MethodHandler): void;
+  setPluginTools(tools: Array<{ name: string; description: string; pluginId: string }>): void;
 }
 
 export function startGatewayServer(
@@ -52,6 +53,7 @@ export function startGatewayServer(
   const methods = new Map<string, MethodHandler>();
   const startTime = Date.now();
   let eventSeq = 0;
+  let pluginToolsCatalog: Array<{ name: string; description: string; pluginId: string }> = [];
 
   // --- Register core methods ---
   const registerMethod = (method: string, handler: MethodHandler) => {
@@ -109,7 +111,7 @@ export function startGatewayServer(
     { id: 'claude-opus-4-6', provider: 'anthropic', name: 'Claude Opus 4.6' },
     { id: 'claude-haiku-4-5', provider: 'anthropic', name: 'Claude Haiku 4.5' },
   ]);
-  registerMethod('tools.catalog', async () => []);
+  registerMethod('tools.catalog', async () => pluginToolsCatalog);
   registerMethod('agents.list', async () => []);
   registerMethod('logs.tail', async () => []);
   registerMethod('wake', async () => ({ ok: true }));
@@ -387,6 +389,10 @@ export function startGatewayServer(
     httpServer.listen(port, host, () => {
       logger.info({ port, host }, 'Gateway server started');
 
+      const setPluginTools = (tools: Array<{ name: string; description: string; pluginId: string }>) => {
+        pluginToolsCatalog = tools;
+      };
+
       const server: GatewayServer = {
         async close() {
           clearInterval(tickTimer);
@@ -411,6 +417,7 @@ export function startGatewayServer(
           return clients;
         },
         registerMethod,
+        setPluginTools,
       };
 
       resolve(server);

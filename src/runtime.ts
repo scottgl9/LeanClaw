@@ -78,14 +78,24 @@ export async function startRuntime(): Promise<RuntimeState> {
     process.env.LEANCLAW_PLUGIN_DIR || '',
   ].filter(Boolean);
 
+  let pluginRegistry: Awaited<ReturnType<typeof loadPlugins>> | null = null;
   if (pluginDirs.length > 0) {
-    const registry = await loadPlugins({ dirs: pluginDirs });
-    setActiveRegistry(registry);
-    logger.info({ pluginCount: registry.list().length }, 'Plugins loaded');
+    pluginRegistry = await loadPlugins({ dirs: pluginDirs });
+    setActiveRegistry(pluginRegistry);
+    logger.info({ pluginCount: pluginRegistry.list().length }, 'Plugins loaded');
   }
 
   // 6. Start gateway
   const gateway = await startGatewayServer();
+
+  // 6b. Wire plugin tools into gateway
+  if (pluginRegistry) {
+    const tools = pluginRegistry.getTools();
+    if (tools.length > 0) {
+      gateway.setPluginTools(tools.map((t) => ({ name: t.name, description: t.description, pluginId: t.pluginId })));
+      logger.info({ toolCount: tools.length }, 'Plugin tools wired into gateway');
+    }
+  }
 
   // 7. Initialize channels (from plugins)
   const channels: Channel[] = [];
