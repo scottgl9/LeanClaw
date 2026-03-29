@@ -295,3 +295,107 @@ describe('Interactive gateway methods', () => {
     ws.close();
   });
 });
+
+describe('Phase 4 gateway methods (system-presence, system-event, agent, tools.effective, exec.approval.resolve)', () => {
+  it('system-presence returns array with client info when called', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'system-presence');
+
+    expect(res.ok).toBe(true);
+    expect(Array.isArray(res.payload)).toBe(true);
+    expect(res.payload.length).toBeGreaterThanOrEqual(1);
+    // The connected client should appear in presence
+    const self = res.payload.find((p: any) => p.clientId === 'test');
+    expect(self).toBeDefined();
+    expect(typeof self.connId).toBe('string');
+    expect(typeof self.ts).toBe('number');
+    ws.close();
+  });
+
+  it('system-event returns {ok:true, received:true}', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'system-event', { event: 'test', data: {} });
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.ok).toBe(true);
+    expect(res.payload.received).toBe(true);
+    ws.close();
+  });
+
+  it('agent returns {ok:true, runId:null, status:not_supported, message:string}', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'agent', { prompt: 'test' });
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.ok).toBe(true);
+    expect(res.payload.runId).toBeNull();
+    expect(res.payload.status).toBe('not_supported');
+    expect(typeof res.payload.message).toBe('string');
+    ws.close();
+  });
+
+  it('tools.effective returns {tools:[], sessionKey}', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'tools.effective', { sessionKey: 'sess-123' });
+
+    expect(res.ok).toBe(true);
+    expect(Array.isArray(res.payload.tools)).toBe(true);
+    expect(res.payload.tools).toHaveLength(0);
+    expect(res.payload.sessionKey).toBe('sess-123');
+    ws.close();
+  });
+
+  it('tools.effective returns null sessionKey when not provided', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'tools.effective');
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.sessionKey).toBeNull();
+    ws.close();
+  });
+
+  it('exec.approval.resolve returns {ok:true, resolved:false, reason:string}', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'exec.approval.resolve', { approvalId: 'appr-1', approved: true });
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.ok).toBe(true);
+    expect(res.payload.resolved).toBe(false);
+    expect(typeof res.payload.reason).toBe('string');
+    ws.close();
+  });
+
+  it('features.events includes presence, system, exec.approval.requested, shutdown', async () => {
+    server = await startGatewayServer(testPort);
+
+    const helloOk = await new Promise<any>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}`);
+      ws.on('error', reject);
+      ws.once('message', () => {
+        ws.once('message', (data) => {
+          resolve(JSON.parse(data.toString()));
+          ws.close();
+        });
+        ws.send(JSON.stringify({
+          type: 'req', id: 'feat-1', method: 'connect',
+          params: {
+            minProtocol: PROTOCOL_VERSION, maxProtocol: PROTOCOL_VERSION,
+            client: { id: 'feat-test', version: '1.0', platform: 'linux', mode: 'test' },
+          },
+        }));
+      });
+    });
+
+    const events: string[] = helloOk.payload.features.events;
+    expect(events).toContain('presence');
+    expect(events).toContain('system');
+    expect(events).toContain('exec.approval.requested');
+    expect(events).toContain('shutdown');
+  });
+});
