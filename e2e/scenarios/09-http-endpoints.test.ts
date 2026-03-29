@@ -69,8 +69,8 @@ describe('Scenario 9: HTTP Endpoints', () => {
     expect(res.status).toBe(200);
   });
 
-  // 9.6 POST /health → 404 or 405
-  it('9.6 POST /health returns non-success or matches GET behavior', async () => {
+  // 9.6 POST /health → 405 Method Not Allowed
+  it('9.6 POST /health returns 405 Method Not Allowed', async () => {
     server = await startGatewayServer(testPort);
     const res = await fetch(`http://127.0.0.1:${testPort}/health`, {
       method: 'POST',
@@ -78,9 +78,9 @@ describe('Scenario 9: HTTP Endpoints', () => {
       body: JSON.stringify({}),
     });
 
-    // LeanClaw's health handler doesn't check HTTP method, so POST may return 200
-    // This is a minor deviation — OpenClaw might return 405
-    // GAP: LeanClaw returns 200 for POST /health; OpenClaw may return 405 Method Not Allowed
-    expect([200, 404, 405]).toContain(res.status);
+    expect(res.status).toBe(405);
+    expect(res.headers.get('allow')).toBe('GET, HEAD');
+    const body = await res.json() as any;
+    expect(body.error).toBe('Method Not Allowed');
   });
 });

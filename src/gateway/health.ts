@@ -19,6 +19,15 @@ export function setHealthProvider(provider: HealthProvider): void {
 
 export function handleHealthRequest(req: IncomingMessage, res: ServerResponse): boolean {
   const url = req.url || '/';
+  const method = req.method || 'GET';
+
+  // Health paths only accept GET and HEAD
+  const healthPaths = ['/health', '/healthz', '/ready', '/readyz', '/metrics'];
+  if (healthPaths.includes(url) && method !== 'GET' && method !== 'HEAD') {
+    res.writeHead(405, { 'Allow': 'GET, HEAD', 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+    return true;
+  }
 
   if (url === '/health' || url === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });

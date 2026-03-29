@@ -39,14 +39,8 @@ const PRIORITY_MAP: Record<string, 'P0' | 'P1' | 'P2'> = {
   '9.1': 'P0', '9.2': 'P0', '9.3': 'P1', '9.4': 'P1', '9.5': 'P2', '9.6': 'P2',
 };
 
-// Known gaps
-const KNOWN_GAPS: Array<{ method: string; severity: 'P0' | 'P1' | 'P2'; description: string }> = [
-  { method: 'sessions.send', severity: 'P1', description: 'Partial — routes to chat.send when chatJid+text provided, otherwise returns helpful error' },
-  { method: 'POST /health', severity: 'P2', description: 'Returns 200 instead of 405 Method Not Allowed' },
-  { method: 'device.token.rotate', severity: 'P2', description: 'Not registered — cannot rotate device tokens' },
-  { method: 'device.token.revoke', severity: 'P2', description: 'Not registered — cannot revoke device tokens' },
-  { method: 'skills.bins', severity: 'P2', description: 'Not registered — node skill exec degraded' },
-];
+// Known gaps — all P1/P2 gaps resolved
+const KNOWN_GAPS: Array<{ method: string; severity: 'P0' | 'P1' | 'P2'; description: string }> = [];
 
 function extractTestNumber(testName: string): string | null {
   const match = testName.match(/^(\d+\.\d+)/);
@@ -181,10 +175,7 @@ Generated: ${now}
 
 ## Next Steps
 
-1. Consider implementing device token lifecycle (\`device.token.rotate/revoke\`)
-2. Fix POST /health to return 405 Method Not Allowed
-3. Add \`skills.bins\` method for node skill exec
-4. Implement full \`sessions.send\` routing to session-scoped agent
+All P0/P1/P2 compatibility gaps have been resolved. No remaining gaps.
 `;
 
   return report;

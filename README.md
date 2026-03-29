@@ -78,7 +78,7 @@ Connect to `ws://host:port/` and follow the OpenClaw Protocol v3 handshake:
 2. Client sends `connect` request with protocol version and client info
 3. Server responds with `hello-ok` containing features and policy
 
-Available methods after authentication: `health`, `sessions.list`, `config.get`, `channels.status`, `cron.list`, `groups.list`, `providers.list`, plus any methods registered by plugins.
+Available methods after authentication: `health`, `status`, `sessions.list`, `sessions.send`, `config.get`, `channels.status`, `cron.list`, `cron.add`, `cron.remove`, `cron.run`, `groups.list`, `providers.list`, `models.list`, `chat.send`, `chat.abort`, `system-presence`, `system-event`, `agent`, `tools.effective`, `exec.approval.resolve`, `device.token.rotate`, `device.token.revoke`, `skills.bins`, plus any methods registered by plugins. See `docs/gateway-protocol.md` for the full method reference.
 
 ## Plugins
 
@@ -161,8 +161,10 @@ src/
 ```bash
 npm run dev          # Run with hot reload
 npm run build        # Compile TypeScript
-npm test             # Run tests (186 tests)
+npm test             # Run tests (473 tests: 339 unit + 129 E2E + 5 CLI)
 npm run test:watch   # Watch mode
+npm run e2e          # Run E2E compatibility tests only
+npm run e2e:scorecard # Generate OpenClaw compatibility scorecard
 npm run typecheck    # Type check without emitting
 npm run lint         # Lint
 npm run format       # Format code

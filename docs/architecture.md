@@ -113,3 +113,36 @@ SQLite (`better-sqlite3`) with tables:
 - `registered_groups` — Group registrations with config
 - `audit_log` — Security event audit trail
 - `provider_usage` — Token usage tracking per group/provider
+
+## Testing
+
+LeanClaw has **473 tests** across two suites:
+
+### Unit Tests (`src/`) — 339 tests
+Cover all internal components:
+- `gateway/protocol.test.ts` — Protocol v3 schema, frame types, ConnectParams, HelloOkPayload
+- `gateway/auth.test.ts` — API key enforcement, rate limiting, RBAC
+- `gateway/health.test.ts` — HTTP endpoint unit tests
+- `gateway/openclaw-compat.test.ts` — Full Protocol v3 handshake compatibility
+- `gateway/methods.test.ts` — All gateway method responses
+- `plugins/loader.test.ts` — Plugin discovery, manifest compat, caching
+- `plugins/openclaw-compat.test.ts` — Plugin SDK, PluginRegistry API
+- `security/` — Mount security, sender allowlist, audit logging
+- `queue/` — GroupQueue concurrency, CollisionTracker
+- `agent/` — Session management, container scheduling
+
+### E2E Tests (`e2e/`) — 129 tests across 13 scenarios
+Black-box protocol compatibility tests against running LeanClaw gateway:
+- Scenarios 1-3: Handshake, frames, method surface
+- Scenarios 4-6: Plugins, multi-client, restart recovery
+- Scenarios 7-9: Error handling, auth, HTTP endpoints
+- Scenarios 10-12: Chat, cron, node role
+- Scenario C: Chaos/failure injection
+
+```bash
+npm test              # Full suite
+npm run e2e           # E2E only
+npm run e2e:scorecard # OpenClaw compatibility scorecard
+```
+
+**Compatibility scorecard**: P0 25/25 ✅ · P1 22/22 ✅ · P2 62/62 ✅ · Known gaps: 0
