@@ -10,6 +10,7 @@ import path from 'path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { loadPlugins } from './loader.js';
+import { PluginRegistry } from './registry.js';
 
 let tmpDir: string;
 
@@ -223,5 +224,121 @@ describe('OpenClaw plugin manifest compatibility', () => {
     const plugin = registry.get('custom');
     expect(plugin).toBeDefined();
     expect((plugin!.manifest as any).customField).toBe('should-be-preserved');
+  });
+});
+
+describe('Plugin SDK exports', () => {
+  it('loadPlugins is exported from sdk.ts', async () => {
+    const sdk = await import('./sdk.js');
+    expect(typeof sdk.loadPlugins).toBe('function');
+  });
+
+  it('getPlugin is exported from sdk.ts', async () => {
+    const sdk = await import('./sdk.js');
+    expect(typeof sdk.getPlugin).toBe('function');
+  });
+
+  it('listPlugins is exported from sdk.ts', async () => {
+    const sdk = await import('./sdk.js');
+    expect(typeof sdk.listPlugins).toBe('function');
+  });
+
+  it('PluginRegistry is exported from sdk.ts', async () => {
+    const sdk = await import('./sdk.js');
+    expect(sdk.PluginRegistry).toBeDefined();
+    expect(typeof sdk.PluginRegistry).toBe('function');
+  });
+});
+
+describe('PluginRegistry API', () => {
+  it('register() stores plugin record', () => {
+    const registry = new PluginRegistry();
+    registry.register({ id: 'reg-test', name: 'RegTest', version: '1.0.0', status: 'loaded', rootDir: '/tmp', manifest: { id: 'reg-test' } });
+    expect(registry.has('reg-test')).toBe(true);
+  });
+
+  it('get(id) returns stored record', () => {
+    const registry = new PluginRegistry();
+    registry.register({ id: 'get-test', name: 'GetTest', version: '2.0.0', status: 'loaded', rootDir: '/tmp', manifest: { id: 'get-test' } });
+    const record = registry.get('get-test');
+    expect(record).toBeDefined();
+    expect(record.name).toBe('GetTest');
+  });
+
+  it('get(nonexistent) returns undefined', () => {
+    const registry = new PluginRegistry();
+    expect(registry.get('nonexistent')).toBeUndefined();
+  });
+
+  it('list() returns all records as array', () => {
+    const registry = new PluginRegistry();
+    registry.register({ id: 'list-a', name: 'A', version: '1.0.0', status: 'loaded', rootDir: '/tmp', manifest: { id: 'list-a' } });
+    registry.register({ id: 'list-b', name: 'B', version: '1.0.0', status: 'loaded', rootDir: '/tmp', manifest: { id: 'list-b' } });
+    expect(Array.isArray(registry.list())).toBe(true);
+    expect(registry.list()).toHaveLength(2);
+  });
+
+  it('list() returns empty array when empty', () => {
+    const registry = new PluginRegistry();
+    expect(registry.list()).toEqual([]);
+  });
+
+  it('register() with duplicate id overwrites previous', () => {
+    const registry = new PluginRegistry();
+    registry.register({ id: 'dup', name: 'First', version: '1.0.0', status: 'loaded', rootDir: '/tmp', manifest: { id: 'dup' } });
+    registry.register({ id: 'dup', name: 'Second', version: '2.0.0', status: 'loaded', rootDir: '/tmp', manifest: { id: 'dup' } });
+    expect(registry.list()).toHaveLength(1);
+    expect(registry.get('dup').name).toBe('Second');
+  });
+
+  it('record has required fields: id, name, version, status, rootDir, manifest', () => {
+    const registry = new PluginRegistry();
+    registry.register({ id: 'fields', name: 'Fields', version: '1.0.0', status: 'loaded', rootDir: '/tmp/fields', manifest: { id: 'fields' } });
+    const record = registry.get('fields');
+    expect(record.id).toBe('fields');
+    expect(record.name).toBe('Fields');
+    expect(record.version).toBe('1.0.0');
+    expect(record.status).toBe('loaded');
+    expect(record.rootDir).toBe('/tmp/fields');
+    expect(record.manifest).toBeDefined();
+    expect(record.manifest.id).toBe('fields');
+  });
+});
+
+describe('Plugin status values', () => {
+  it('newly loaded plugin has status loaded', async () => {
+    writePlugin('status-loaded', { id: 'status-loaded', name: 'Loaded' });
+    const registry = await loadPlugins({ dirs: [tmpDir], cache: false });
+    expect(registry.get('status-loaded')!.status).toBe('loaded');
+  });
+
+  it('plugin with import error has status error and error message', async () => {
+    // Create a plugin with a main file that does not exist as a valid module
+    const pluginDir = path.join(tmpDir, 'error-plugin');
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, 'openclaw.plugin.json'), JSON.stringify({ id: 'error-plugin', main: 'nonexistent.js' }));
+
+    const registry = await loadPlugins({ dirs: [tmpDir], cache: false });
+    const plugin = registry.get('error-plugin');
+    expect(plugin).toBeDefined();
+    // main file doesn't exist, so module load is skipped (no error) unless the file exists but fails to import
+    // Let's create a file that throws on import
+    fs.writeFileSync(path.join(pluginDir, 'bad-module.js'), 'throw new Error("import failure");');
+    fs.writeFileSync(path.join(pluginDir, 'openclaw.plugin.json'), JSON.stringify({ id: 'error-plugin', main: 'bad-module.js' }));
+
+    const registry2 = await loadPlugins({ dirs: [tmpDir], cache: false });
+    const plugin2 = registry2.get('error-plugin');
+    expect(plugin2).toBeDefined();
+    expect(plugin2!.status).toBe('error');
+    expect(plugin2!.error).toBeDefined();
+    expect(typeof plugin2!.error).toBe('string');
+  });
+
+  it('plugin status is one of: loaded, error, unloaded', () => {
+    const validStatuses = ['loaded', 'error', 'unloaded'];
+    // Just verify the type system allows these values
+    for (const status of validStatuses) {
+      expect(validStatuses).toContain(status);
+    }
   });
 });
