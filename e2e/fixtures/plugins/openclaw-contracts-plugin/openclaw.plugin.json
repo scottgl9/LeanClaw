@@ -1,0 +1,15 @@
+{
+  "id": "contracts-plugin",
+  "name": "OpenClaw Contracts Plugin",
+  "version": "1.0.0",
+  "kind": "provider",
+  "contracts": {
+    "speech": {
+      "tts": true,
+      "stt": false
+    }
+  },
+  "configSchema": {
+    "type": "object"
+  }
+}

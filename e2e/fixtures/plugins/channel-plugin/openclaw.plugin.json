@@ -1,0 +1,6 @@
+{
+  "id": "channel-plugin",
+  "name": "Channel Plugin",
+  "version": "1.0.0",
+  "channels": ["test-channel"]
+}
