@@ -1,4 +1,3 @@
-import { GATEWAY_API_KEY } from '../config.js';
 import { logger } from '../logger.js';
 
 // --- Rate limiting (sliding window per IP) ---
@@ -45,9 +44,11 @@ cleanupTimer.unref();
 // --- API key authentication ---
 
 export function validateApiKey(token: string | undefined): boolean {
-  if (!GATEWAY_API_KEY) return true; // No key configured = open
+  // Read at call time so tests can set process.env before starting a server
+  const key = process.env['LEANCLAW_GATEWAY_API_KEY'] || '';
+  if (!key) return true; // No key configured = open
   if (!token) return false;
-  return token === GATEWAY_API_KEY;
+  return token === key;
 }
 
 // --- Per-sender/per-group rate limiting ---

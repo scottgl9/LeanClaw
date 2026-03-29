@@ -41,16 +41,11 @@ const PRIORITY_MAP: Record<string, 'P0' | 'P1' | 'P2'> = {
 
 // Known gaps
 const KNOWN_GAPS: Array<{ method: string; severity: 'P0' | 'P1' | 'P2'; description: string }> = [
-  { method: 'system-presence', severity: 'P0', description: 'Not registered — OpenClaw macOS app Instances tab broken' },
-  { method: 'system-event', severity: 'P0', description: 'Not registered — OpenClaw macOS app health reporting broken' },
-  { method: 'agent', severity: 'P0', description: 'Not registered — Core "send prompt from UI" broken' },
-  { method: 'tools.effective', severity: 'P1', description: 'Not registered — UI tool inspector broken' },
-  { method: 'exec.approval.resolve', severity: 'P1', description: 'Not registered — exec approval workflow broken' },
+  { method: 'sessions.send', severity: 'P1', description: 'Partial — routes to chat.send when chatJid+text provided, otherwise returns helpful error' },
+  { method: 'POST /health', severity: 'P2', description: 'Returns 200 instead of 405 Method Not Allowed' },
   { method: 'device.token.rotate', severity: 'P2', description: 'Not registered — cannot rotate device tokens' },
   { method: 'device.token.revoke', severity: 'P2', description: 'Not registered — cannot revoke device tokens' },
   { method: 'skills.bins', severity: 'P2', description: 'Not registered — node skill exec degraded' },
-  { method: 'sessions.send', severity: 'P1', description: 'Returns error stub instead of routing to session' },
-  { method: 'POST /health', severity: 'P2', description: 'Returns 200 instead of 405 Method Not Allowed' },
 ];
 
 function extractTestNumber(testName: string): string | null {
@@ -172,16 +167,24 @@ Generated: ${now}
 
 - Scenario 1: Boot & Handshake (12 tests)
 - Scenario 2: Protocol Frame Format (9 tests)
-- Scenario 3: Method Surface Completeness (34+2 gap tests)
+- Scenario 3: Method Surface Completeness (34+3 tests)
+- Scenario 4: Plugin Lifecycle (5 tests)
+- Scenario 5: Multi-Client (6 tests)
+- Scenario 6: Gateway Restart (4 tests)
+- Scenario 7: Error Handling (7 tests)
+- Scenario 8: Authentication Flows (7 tests)
 - Scenario 9: HTTP Endpoints (6 tests)
+- Scenario 10: Chat Flow (6 tests)
+- Scenario 11: Cron Lifecycle (5 tests)
+- Scenario 12: Node Role (5 tests)
+- Scenario C: Chaos & Failure Injection (6 tests)
 
 ## Next Steps
 
-1. Implement missing P0 methods: \`system-presence\`, \`system-event\`, \`agent\`
-2. Fix \`sessions.send\` to route properly instead of returning error stub
-3. Add \`tools.effective\` method for UI tool inspector
-4. Consider implementing device token lifecycle (\`device.token.rotate/revoke\`)
-5. Implement Phase 3+4 scenarios (plugin lifecycle, multi-client, restart, error handling)
+1. Consider implementing device token lifecycle (\`device.token.rotate/revoke\`)
+2. Fix POST /health to return 405 Method Not Allowed
+3. Add \`skills.bins\` method for node skill exec
+4. Implement full \`sessions.send\` routing to session-scoped agent
 `;
 
   return report;

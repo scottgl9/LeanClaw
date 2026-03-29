@@ -30,8 +30,6 @@ afterEach(async () => {
 describe('Scenario 8: Authentication Flows', () => {
   // 8.1 No API key configured — connect without token succeeds
   it('8.1 No API key configured — open access', async () => {
-    // Ensure no API key is set (GATEWAY_API_KEY is read at import time from config.ts,
-    // but validateApiKey checks it — when it's empty/undefined, all tokens are accepted)
     delete process.env['LEANCLAW_GATEWAY_API_KEY'];
     server = await startGatewayServer(testPort);
 
@@ -44,34 +42,38 @@ describe('Scenario 8: Authentication Flows', () => {
 
   // 8.2 API key configured — connect without token returns UNAUTHORIZED + close
   it('8.2 API key configured — connect without token rejected', async () => {
-    // GAP: GATEWAY_API_KEY is read at module load time in config.ts and imported
-    // as a const in auth.ts. Setting process.env after import won't affect the
-    // already-evaluated const. This test validates the protocol flow assuming the
-    // key check path works when validateApiKey returns false.
-    // For a true integration test, we'd need to spawn a separate process.
-
-    // We test the auth rejection path by using a server that has a method
-    // requiring auth and sending a raw connect without a token.
+    process.env['LEANCLAW_GATEWAY_API_KEY'] = 'test-key-123';
     server = await startGatewayServer(testPort);
 
-    // In the default config (no API key), this will succeed.
-    // We verify the auth block is present in hello-ok.
-    const { ws, helloOk } = await openClawConnect(testPort);
-    expect(helloOk.ok).toBe(true);
-    // GAP: Cannot test API key rejection without process restart
-    // The auth.ts imports GATEWAY_API_KEY at module load time as a const.
+    const { ws, challenge } = await connectRaw(testPort);
+    expect(challenge.type).toBe('event');
+    expect(challenge.event).toBe('connect.challenge');
+
+    // Send connect without auth token
+    const res = await sendRaw(ws, JSON.stringify({
+      type: 'req',
+      id: 'auth-test-notoken',
+      method: 'connect',
+      params: {
+        minProtocol: PROTOCOL_VERSION,
+        maxProtocol: PROTOCOL_VERSION,
+        client: { id: 'auth-client', version: '1.0', platform: 'linux', mode: 'test' },
+      },
+    }));
+
+    expect(res.ok).toBe(false);
+    expect(res.error.code).toBe('UNAUTHORIZED');
 
     ws.close();
   });
 
   // 8.3 Correct token accepted — hello-ok returned
   it('8.3 Correct token accepted — hello-ok returned', async () => {
-    // GAP: Same limitation as 8.2 — GATEWAY_API_KEY is a module-level const.
-    // We test with open access and verify token is passed through.
+    process.env['LEANCLAW_GATEWAY_API_KEY'] = 'test-key-123';
     server = await startGatewayServer(testPort);
 
     const { ws, helloOk } = await openClawConnect(testPort, {
-      token: 'test-api-key-123',
+      token: 'test-key-123',
     });
     expect(helloOk.ok).toBe(true);
     expect(helloOk.payload.type).toBe('hello-ok');
@@ -81,33 +83,33 @@ describe('Scenario 8: Authentication Flows', () => {
 
   // 8.4 Wrong token rejected — UNAUTHORIZED + close (4401)
   it('8.4 Wrong token rejected — UNAUTHORIZED + close', async () => {
-    // GAP: Cannot fully test without restarting process to pick up API key.
-    // We verify the protocol path by testing what happens with protocol mismatch
-    // as a proxy for the auth rejection flow (same close code pattern).
+    process.env['LEANCLAW_GATEWAY_API_KEY'] = 'test-key-123';
     server = await startGatewayServer(testPort);
 
-    const { ws } = await connectRaw(testPort);
+    const { ws, challenge } = await connectRaw(testPort);
+    expect(challenge.event).toBe('connect.challenge');
 
-    // Send connect with old protocol to trigger rejection (proxy for auth rejection)
     const res = await sendRaw(ws, JSON.stringify({
       type: 'req',
-      id: 'auth-test-1',
+      id: 'auth-test-wrong',
       method: 'connect',
       params: {
-        minProtocol: 1,
-        maxProtocol: 2,
+        minProtocol: PROTOCOL_VERSION,
+        maxProtocol: PROTOCOL_VERSION,
         client: { id: 'auth-client', version: '1.0', platform: 'linux', mode: 'test' },
+        auth: { token: 'wrong-key-456' },
       },
     }));
 
     expect(res.ok).toBe(false);
-    // GAP: For true API key test, need separate process with LEANCLAW_GATEWAY_API_KEY set
+    expect(res.error.code).toBe('UNAUTHORIZED');
 
     ws.close();
   });
 
   // 8.5 hello-ok.auth.deviceToken is non-empty string
   it('8.5 hello-ok.auth.deviceToken is non-empty string', async () => {
+    delete process.env['LEANCLAW_GATEWAY_API_KEY'];
     server = await startGatewayServer(testPort);
 
     const { ws, helloOk } = await openClawConnect(testPort);
@@ -121,6 +123,7 @@ describe('Scenario 8: Authentication Flows', () => {
 
   // 8.6 Role from connect params is reflected in auth response
   it('8.6 Role from connect params reflected in auth response', async () => {
+    delete process.env['LEANCLAW_GATEWAY_API_KEY'];
     server = await startGatewayServer(testPort);
 
     const { ws, helloOk } = await openClawConnect(testPort, {
@@ -134,6 +137,7 @@ describe('Scenario 8: Authentication Flows', () => {
 
   // 8.7 Scopes from connect params are reflected in auth response
   it('8.7 Scopes from connect params reflected in auth response', async () => {
+    delete process.env['LEANCLAW_GATEWAY_API_KEY'];
     server = await startGatewayServer(testPort);
 
     const scopes = ['operator.admin', 'ui.read', 'custom.scope'];
