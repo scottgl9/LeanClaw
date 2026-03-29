@@ -6,7 +6,7 @@ import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { randomUUID } from 'crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 
-import { GATEWAY_HOST, GATEWAY_PORT, GATEWAY_API_KEY } from '../config.js';
+import { GATEWAY_HOST, GATEWAY_PORT } from '../config.js';
 import { logger } from '../logger.js';
 import { checkRateLimit, extractBearerToken, validateApiKey } from './auth.js';
 import { handleHealthRequest } from './health.js';
@@ -75,7 +75,14 @@ export function startGatewayServer(
   registerMethod('config.set', async () => ({ applied: false, reason: 'Config changes via gateway not supported — use LEANCLAW_* env vars' }));
   registerMethod('config.patch', async () => ({ applied: false, reason: 'Config changes via gateway not supported — use LEANCLAW_* env vars' }));
   registerMethod('config.schema', async () => ({ type: 'object', properties: {} }));
-  registerMethod('sessions.send', async () => ({ error: 'Use chat.send instead' }));
+  registerMethod('sessions.send', async (params) => {
+    const p = params as any;
+    if (p?.chatJid && p?.text) {
+      const chatSend = methods.get('chat.send');
+      if (chatSend) return chatSend(params, '');
+    }
+    return { ok: false, error: 'sessions.send not supported — use chat.send with {chatJid, text}' };
+  });
   registerMethod('sessions.patch', async () => ({ ok: true }));
   registerMethod('sessions.create', async () => ({ error: 'Sessions are created automatically on first message' }));
   registerMethod('sessions.delete', async () => ({ ok: true }));
@@ -93,6 +100,41 @@ export function startGatewayServer(
   registerMethod('agents.list', async () => []);
   registerMethod('logs.tail', async () => []);
   registerMethod('wake', async () => ({ ok: true }));
+
+  // --- P0 gap fixes: methods OpenClaw clients expect ---
+
+  registerMethod('system-presence', async (_params, _clientId) => {
+    return Array.from(clients.values())
+      .filter((c) => c.authenticated)
+      .map((c) => ({
+        connId: c.connId,
+        clientId: c.clientInfo?.id,
+        mode: c.clientInfo?.mode,
+        version: c.clientInfo?.version,
+        platform: c.clientInfo?.platform,
+        ts: Date.now(),
+      }));
+  });
+
+  registerMethod('system-event', async () => ({ ok: true, received: true }));
+
+  registerMethod('agent', async () => ({
+    ok: true,
+    runId: null,
+    status: 'not_supported',
+    message: 'Agent execution via gateway is a LeanClaw roadmap item. Use chat.send for now.',
+  }));
+
+  registerMethod('tools.effective', async (params) => ({
+    tools: [],
+    sessionKey: (params as any)?.sessionKey || null,
+  }));
+
+  registerMethod('exec.approval.resolve', async () => ({
+    ok: true,
+    resolved: false,
+    reason: 'Exec approvals not yet supported in LeanClaw',
+  }));
   registerMethod('gateway.identity.get', async () => ({
     name: 'LeanClaw',
     version: '0.1.0',
@@ -229,7 +271,7 @@ export function startGatewayServer(
           },
           features: {
             methods: Array.from(methods.keys()),
-            events: ['connect.challenge', 'tick', 'chat', 'agent', 'session.message', 'health', 'cron'],
+            events: ['connect.challenge', 'tick', 'chat', 'agent', 'session.message', 'health', 'cron', 'presence', 'system', 'exec.approval.requested', 'shutdown'],
           },
           snapshot: {
             presence: Array.from(clients.values())
@@ -238,7 +280,7 @@ export function startGatewayServer(
             health: {},
             stateVersion: { presence: clients.size, health: 1 },
             uptimeMs: Date.now() - startTime,
-            authMode: GATEWAY_API_KEY ? 'api-key' : 'none',
+            authMode: process.env['LEANCLAW_GATEWAY_API_KEY'] ? 'api-key' : 'none',
           },
           policy: {
             maxPayload: MAX_PAYLOAD_BYTES,

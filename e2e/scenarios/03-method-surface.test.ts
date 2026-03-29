@@ -2,7 +2,7 @@
  * Scenario 3: Method Surface Completeness
  * Verifies all methods that OpenClaw clients call are registered and return
  * compatible response shapes.
- * 34 tests.
+ * 34 + 3 tests.
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { startGatewayServer, type GatewayServer } from '../../src/gateway/server.js';
@@ -509,34 +509,31 @@ describe('Scenario 3: Method Surface Completeness', () => {
     ws.close();
   });
 
-  // 3.33 system-presence (MISSING method)
-  it('3.33 system-presence — documents current gap', async () => {
+  // 3.33 system-presence
+  it('3.33 system-presence returns presence array', async () => {
     server = await startServerWithStubs(testPort);
     const { ws } = await openClawConnect(testPort);
 
     const res = await call(ws, 'system-presence');
     assertResponseFrame(res);
-
-    // GAP: LeanClaw returns INVALID_REQUEST (Unknown method), OpenClaw would return presence map/array
-    expect(res.ok).toBe(false);
-    expect(res.error.code).toBe('INVALID_REQUEST');
-    // OpenClaw expected: { ok: true, payload: [...presenceEntries] }
+    expect(res.ok).toBe(true);
+    expect(Array.isArray(res.payload)).toBe(true);
+    expect(res.payload.length).toBeGreaterThan(0);
+    expect(res.payload[0]).toHaveProperty('connId');
+    expect(res.payload[0]).toHaveProperty('ts');
 
     ws.close();
   });
 
-  // 3.34 system-event (MISSING method)
-  it('3.34 system-event — documents current gap', async () => {
+  // 3.34 system-event
+  it('3.34 system-event accepts beacon', async () => {
     server = await startServerWithStubs(testPort);
     const { ws } = await openClawConnect(testPort);
 
     const res = await call(ws, 'system-event', { event: 'heartbeat', ts: Date.now() });
     assertResponseFrame(res);
-
-    // GAP: LeanClaw returns INVALID_REQUEST (Unknown method), OpenClaw would accept the beacon
-    expect(res.ok).toBe(false);
-    expect(res.error.code).toBe('INVALID_REQUEST');
-    // OpenClaw expected: { ok: true } (accepts periodic beacons from clients)
+    expect(res.ok).toBe(true);
+    expect(res.payload.received).toBe(true);
 
     ws.close();
   });
@@ -544,29 +541,44 @@ describe('Scenario 3: Method Surface Completeness', () => {
 
 // --- Additional gap documentation for methods not in the 34-test surface ---
 
-describe('Scenario 3: Additional Gap Methods', () => {
-  // GAP: tools.effective — not registered in LeanClaw
-  it('tools.effective — documents current gap', async () => {
+describe('Scenario 3: Additional Methods', () => {
+  // tools.effective
+  it('tools.effective returns {tools:[], sessionKey}', async () => {
     server = await startServerWithStubs(testPort);
     const { ws } = await openClawConnect(testPort);
 
-    const res = await call(ws, 'tools.effective', { sessionId: 'test' });
-    // GAP: LeanClaw returns INVALID_REQUEST, OpenClaw would return session-scoped tool list
-    expect(res.ok).toBe(false);
-    expect(res.error.code).toBe('INVALID_REQUEST');
+    const res = await call(ws, 'tools.effective', { sessionKey: 'sess-1' });
+    assertResponseFrame(res);
+    expect(res.ok).toBe(true);
+    expect(Array.isArray(res.payload.tools)).toBe(true);
+    expect(res.payload.sessionKey).toBe('sess-1');
 
     ws.close();
   });
 
-  // GAP: agent — not registered in LeanClaw
-  it('agent — documents current gap', async () => {
+  // agent
+  it('agent returns graceful not_supported stub', async () => {
     server = await startServerWithStubs(testPort);
     const { ws } = await openClawConnect(testPort);
 
     const res = await call(ws, 'agent', { action: 'run', sessionId: 'test' });
-    // GAP: LeanClaw returns INVALID_REQUEST, OpenClaw would trigger agent run from UI
-    expect(res.ok).toBe(false);
-    expect(res.error.code).toBe('INVALID_REQUEST');
+    assertResponseFrame(res);
+    expect(res.ok).toBe(true);
+    expect(res.payload.status).toBe('not_supported');
+    expect(res.payload.runId).toBeNull();
+
+    ws.close();
+  });
+
+  // exec.approval.resolve
+  it('exec.approval.resolve returns graceful stub', async () => {
+    server = await startServerWithStubs(testPort);
+    const { ws } = await openClawConnect(testPort);
+
+    const res = await call(ws, 'exec.approval.resolve', { approvalId: 'test' });
+    assertResponseFrame(res);
+    expect(res.ok).toBe(true);
+    expect(res.payload.resolved).toBe(false);
 
     ws.close();
   });
