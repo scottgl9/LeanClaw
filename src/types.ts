@@ -112,6 +112,10 @@ export interface LLMProvider {
   getContainerEnv(): Record<string, string>;
   estimateCost(inputTokens: number, outputTokens: number): number;
   isConfigured(): boolean;
+  /** Direct API call for session compaction. Optional — defaults to not supported. */
+  summarize?(text: string, instructions?: string, model?: string): Promise<string>;
+  /** Context window size in tokens for the default model */
+  contextWindowSize?: number;
 }
 
 export interface ProviderConfig {
@@ -193,6 +197,52 @@ export interface GatewayResponse {
 export interface GatewayEvent {
   event: string;
   data: unknown;
+}
+
+// --- Agent Execution ---
+
+export interface AgentRun {
+  runId: string;
+  groupFolder: string;
+  chatJid: string;
+  clientId: string;
+  startedAt: string;
+  status: 'running' | 'completed' | 'error';
+  result?: string;
+  error?: string;
+}
+
+// --- Session Compaction ---
+
+export interface CompactionResult {
+  groupFolder: string;
+  originalTokens: number;
+  compactedTokens: number;
+  model: string;
+  compactedAt: string;
+}
+
+// --- Exec Approvals ---
+
+export interface PendingApproval {
+  id: string;
+  runId: string;
+  toolName: string;
+  args: unknown;
+  requestedAt: number;
+  expiresAt: number;
+  clientId: string;
+}
+
+// --- Skills ---
+
+export interface SkillManifest {
+  name: string;
+  version: string;
+  description: string;
+  commands?: string[];
+  userInvocable?: boolean;
+  main?: string;
 }
 
 // --- Plugin ---

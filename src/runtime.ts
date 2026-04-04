@@ -2,11 +2,16 @@
  * LeanClaw Runtime
  * Core lifecycle: startup, message loop, task execution, shutdown.
  */
-import { POLL_INTERVAL, ASSISTANT_NAME, IDLE_TIMEOUT, TIMEZONE, TRIGGER_PATTERN, resolveGroupFolderPath, GATEWAY_PORT, GATEWAY_HOST, CONTAINER_IMAGE, MAX_CONCURRENT_CONTAINERS, DEFAULT_PROVIDER } from './config.js';
-import { initDatabase, getAllRegisteredGroups, getAllChats, getRouterState, setRouterState, getNewMessages, getMessagesSince, getAllTasks, getTaskById, createTask, deleteTask, logTaskRun, updateTask, updateTaskAfterRun, setRegisteredGroup, storeMessage, storeChatMetadata } from './db.js';
+import { randomUUID } from 'crypto';
+import { POLL_INTERVAL, ASSISTANT_NAME, IDLE_TIMEOUT, TIMEZONE, TRIGGER_PATTERN, resolveGroupFolderPath, GATEWAY_PORT, GATEWAY_HOST, CONTAINER_IMAGE, MAX_CONCURRENT_CONTAINERS, DEFAULT_PROVIDER, AUTO_COMPACT } from './config.js';
+import { initDatabase, getAllRegisteredGroups, getAllChats, getRouterState, setRouterState, getNewMessages, getMessagesSince, getAllTasks, getTaskById, createTask, deleteTask, logTaskRun, updateTask, updateTaskAfterRun, setRegisteredGroup, storeMessage, storeChatMetadata, logCompaction } from './db.js';
 import { logger } from './logger.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans, runContainerAgent, writeTasksSnapshot, writeGroupsSnapshot, type ContainerOutput } from './agent/container.js';
 import { SessionManager } from './agent/session.js';
+import { compactSession } from './agent/compaction.js';
+import { ApprovalManager } from './agent/exec-approval.js';
+import { listSkills, searchSkills, getSkillStatus, installSkill, updateSkill } from './skills/manager.js';
+import { executeHooks } from './hooks/registry.js';
 import { startSchedulerLoop, startHeartbeatLoop, stopSchedulerLoop, stopHeartbeatLoop, computeNextRun } from './agent/scheduler.js';
 import { GroupQueue } from './queue/group-queue.js';
 import { CollisionTracker } from './queue/collision.js';
@@ -22,7 +27,7 @@ import { CopilotProvider } from './providers/copilot.js';
 import { formatMessages, formatOutbound, findChannel, routeOutbound } from './router.js';
 import { startIpcWatcher, stopIpcWatcher } from './ipc.js';
 import { loadSenderAllowlist, isTriggerAllowed } from './security/sender-allowlist.js';
-import type { Channel, NewMessage, RegisteredGroup, ScheduledTask } from './types.js';
+import type { AgentRun, Channel, NewMessage, RegisteredGroup, ScheduledTask } from './types.js';
 
 export interface RuntimeState {
   gateway: GatewayServer | null;
@@ -34,6 +39,8 @@ export interface RuntimeState {
   lastTimestamp: string;
   lastAgentTimestamp: Record<string, string>;
   messageLoopRunning: boolean;
+  activeRuns: Map<string, AgentRun>;
+  approvalManager: ApprovalManager | null;
 }
 
 let state: RuntimeState | null = null;
@@ -88,13 +95,29 @@ export async function startRuntime(): Promise<RuntimeState> {
   // 6. Start gateway
   const gateway = await startGatewayServer();
 
-  // 6b. Wire plugin tools into gateway
+  // 6b. Wire plugin tools and HTTP routes into gateway
   if (pluginRegistry) {
     const tools = pluginRegistry.getTools();
     if (tools.length > 0) {
       gateway.setPluginTools(tools.map((t) => ({ name: t.name, description: t.description, pluginId: t.pluginId })));
       logger.info({ toolCount: tools.length }, 'Plugin tools wired into gateway');
     }
+
+    const httpRoutes = pluginRegistry.getHttpRoutes();
+    if (httpRoutes.length > 0) {
+      gateway.setPluginHttpRoutes(httpRoutes);
+      logger.info({ routeCount: httpRoutes.length }, 'Plugin HTTP routes wired into gateway');
+    }
+
+    // Register tools.invoke gateway method for tool execution
+    gateway.registerMethod('tools.invoke', async (params) => {
+      const { toolName, params: toolParams } = params as { toolName: string; params?: unknown };
+      if (!toolName) throw new Error('toolName is required');
+      const tool = pluginRegistry!.getTools().find((t) => t.name === toolName);
+      if (!tool) throw new Error(`Tool not found: ${toolName}`);
+      const callId = `invoke-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      return await tool.execute(callId, toolParams || {});
+    });
   }
 
   // 7. Initialize channels (from plugins)
@@ -116,7 +139,11 @@ export async function startRuntime(): Promise<RuntimeState> {
     connectedChannels: channels.filter((c) => c.isConnected()).length,
   }));
 
-  // 10. Build state
+  // 10. Build approval manager and state
+  const approvalManager = new ApprovalManager((event, payload) => {
+    gateway.broadcast(makeEvent(event, payload));
+  });
+
   state = {
     gateway,
     queue,
@@ -127,12 +154,67 @@ export async function startRuntime(): Promise<RuntimeState> {
     lastTimestamp,
     lastAgentTimestamp,
     messageLoopRunning: false,
+    activeRuns: new Map(),
+    approvalManager,
   };
 
   // 11. Wire gateway methods to runtime state
   gateway.registerMethod('sessions.list', async () => {
-    const sessions = state!.sessions.getAllSessions();
-    return Object.entries(sessions).map(([folder, id]) => ({ folder, sessionId: id }));
+    const allSessions = state!.sessions.getAllSessions();
+    return Object.entries(allSessions).map(([folder, id]) => ({ folder, sessionId: id }));
+  });
+
+  // Session compaction
+  gateway.registerMethod('sessions.compact', async (params) => {
+    const { groupFolder, instructions, model } = (params || {}) as {
+      groupFolder?: string; instructions?: string; model?: string;
+    };
+    if (!groupFolder) throw new Error('groupFolder is required');
+    const result = await compactSession(state!.sessions, { groupFolder, instructions, model });
+    logCompaction(result.groupFolder, result.originalTokens, result.compactedTokens, result.model);
+    return result;
+  });
+
+  // Exec approval flow
+  gateway.registerMethod('exec.approval.resolve', async (params) => {
+    const { approvalId, approved, resolvedBy } = params as {
+      approvalId: string; approved: boolean; resolvedBy?: string;
+    };
+    if (!approvalId) throw new Error('approvalId is required');
+    if (typeof approved !== 'boolean') throw new Error('approved must be a boolean');
+    const resolved = state!.approvalManager!.resolveApproval(approvalId, approved, resolvedBy);
+    return { ok: true, resolved };
+  });
+  gateway.registerMethod('exec.approval.list', async () => {
+    return state!.approvalManager!.getPending();
+  });
+
+  // Skills system
+  gateway.registerMethod('skills.bins', async () => {
+    const skills = listSkills();
+    return {
+      bins: skills.map((s) => ({ name: s.name, version: s.version, dir: s.dir })),
+      version: '0.1.0',
+    };
+  });
+  gateway.registerMethod('skills.status', async (params) => {
+    const { name } = (params || {}) as { name?: string };
+    if (name) return getSkillStatus(name);
+    return listSkills();
+  });
+  gateway.registerMethod('skills.search', async (params) => {
+    const { query } = (params || {}) as { query?: string };
+    return searchSkills(query || '');
+  });
+  gateway.registerMethod('skills.install', async (params) => {
+    const { source } = params as { source: string };
+    if (!source) throw new Error('source is required');
+    return installSkill(source);
+  });
+  gateway.registerMethod('skills.update', async (params) => {
+    const { name } = params as { name: string };
+    if (!name) throw new Error('name is required');
+    return updateSkill(name);
   });
   gateway.registerMethod('config.get', async () => ({
     gateway: { port: GATEWAY_PORT, host: GATEWAY_HOST },
@@ -168,6 +250,106 @@ export async function startRuntime(): Promise<RuntimeState> {
     return listProviders().map((p) => ({
       id: p.id, name: p.name, configured: p.isConfigured(),
     }));
+  });
+
+  // --- Agent execution method (replaces stub in server.ts) ---
+  gateway.registerMethod('agent', async (params, clientId) => {
+    const { prompt, groupFolder, chatJid, sessionKey, model, deliver } = params as {
+      prompt?: string;
+      groupFolder?: string;
+      chatJid?: string;
+      sessionKey?: string;
+      model?: string;
+      deliver?: boolean;
+    };
+
+    if (!prompt) throw new Error('prompt is required');
+
+    const runId = randomUUID();
+    const resolvedFolder = groupFolder || 'gateway';
+    const resolvedJid = chatJid || `gateway-${clientId}`;
+
+    // Find or create a synthetic group for gateway-initiated runs
+    let group = Object.values(state!.registeredGroups).find((g) => g.folder === resolvedFolder);
+    if (!group) {
+      group = {
+        name: resolvedFolder,
+        folder: resolvedFolder,
+        trigger: ASSISTANT_NAME,
+        added_at: new Date().toISOString(),
+        isMain: resolvedFolder === 'main',
+      };
+    }
+
+    const agentRun: AgentRun = {
+      runId,
+      groupFolder: resolvedFolder,
+      chatJid: resolvedJid,
+      clientId: clientId || '',
+      startedAt: new Date().toISOString(),
+      status: 'running',
+    };
+    state!.activeRuns.set(runId, agentRun);
+
+    // Spawn agent asynchronously — return runId immediately
+    (async () => {
+      try {
+        const result = await runAgent(group!, prompt, resolvedJid, state!, async (output) => {
+          // Stream agent output events to connected clients
+          state?.gateway?.broadcast(makeEvent('agent', {
+            runId,
+            type: 'output',
+            text: output.result?.slice(0, 2000) || '',
+            status: output.status,
+          }));
+        });
+
+        const run = state!.activeRuns.get(runId);
+        if (run) {
+          run.status = result === 'success' ? 'completed' : 'error';
+          if (result === 'error') run.error = 'Agent execution failed';
+          state?.gateway?.broadcast(makeEvent('agent', {
+            runId,
+            type: run.status === 'completed' ? 'complete' : 'error',
+            status: run.status,
+            error: run.error,
+          }));
+        }
+      } catch (err) {
+        const run = state!.activeRuns.get(runId);
+        if (run) {
+          run.status = 'error';
+          run.error = err instanceof Error ? err.message : String(err);
+          state?.gateway?.broadcast(makeEvent('agent', {
+            runId,
+            type: 'error',
+            status: 'error',
+            error: run.error,
+          }));
+        }
+      }
+    })();
+
+    return { ok: true, runId, status: 'running' };
+  });
+
+  // --- Agent wait method ---
+  gateway.registerMethod('agent.wait', async (params) => {
+    const { runId, timeout } = params as { runId: string; timeout?: number };
+    if (!runId) throw new Error('runId is required');
+
+    const maxWait = Math.min(timeout || 30000, 120000);
+    const start = Date.now();
+
+    while (Date.now() - start < maxWait) {
+      const run = state!.activeRuns.get(runId);
+      if (!run) return { ok: false, error: `Run not found: ${runId}` };
+      if (run.status === 'completed') return { ok: true, runId, status: 'completed', result: run.result };
+      if (run.status === 'error') return { ok: false, runId, status: 'error', error: run.error };
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    return { ok: false, runId, status: 'timeout', error: 'Agent did not complete within timeout' };
   });
 
   // Interactive methods
@@ -307,9 +489,11 @@ export async function startRuntime(): Promise<RuntimeState> {
     shutdownInProgress = true;
     logger.info('Shutting down...');
 
+    await executeHooks('on_gateway_shutdown', {});
     stopSchedulerLoop();
     stopHeartbeatLoop();
     stopIpcWatcher();
+    state?.approvalManager?.clear();
 
     await queue.shutdown(10_000);
 
@@ -331,6 +515,9 @@ export async function startRuntime(): Promise<RuntimeState> {
 
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+
+  // 17. Fire startup hooks
+  await executeHooks('on_gateway_startup', { port: GATEWAY_PORT, host: GATEWAY_HOST });
 
   logger.info(`LeanClaw started (trigger: @${ASSISTANT_NAME})`);
   return state;
@@ -369,6 +556,7 @@ async function processGroupMessages(chatJid: string, s: RuntimeState): Promise<b
   saveState(s);
 
   logger.info({ group: group.name, messageCount: missedMessages.length }, 'Processing messages');
+  await executeHooks('before_message', { chatJid, group: group.name, messageCount: missedMessages.length });
 
   // Idle timer for closing container stdin
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -410,6 +598,7 @@ async function processGroupMessages(chatJid: string, s: RuntimeState): Promise<b
 
   if (channel) await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
+  await executeHooks('after_message', { chatJid, group: group.name, hadError });
 
   if (result === 'error' || hadError) {
     if (outputSentToUser) {
@@ -423,6 +612,46 @@ async function processGroupMessages(chatJid: string, s: RuntimeState): Promise<b
   }
 
   return true;
+}
+
+const MAX_RETRIES = 3;
+const BASE_RETRY_DELAY = 2000;
+
+function isTransientError(error: string | undefined): boolean {
+  if (!error) return false;
+  return /rate.?limit|429|529|overloaded|temporary|timeout|ECONNRESET|ECONNREFUSED/i.test(error);
+}
+
+async function runAgentWithRetry(
+  group: RegisteredGroup,
+  prompt: string,
+  chatJid: string,
+  s: RuntimeState,
+  onOutput?: (output: ContainerOutput) => Promise<void>,
+): Promise<'success' | 'error'> {
+  let lastError: string | undefined;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const result = await runAgent(group, prompt, chatJid, s, onOutput);
+    if (result === 'success') return 'success';
+
+    // For first attempt, don't retry — runAgent handles context overflow internally
+    if (attempt === 0) {
+      lastError = 'first attempt failed';
+      // Only retry on transient errors
+      // We need to check the error from the last container run
+      // For now, proceed to retry logic
+    }
+
+    if (attempt < MAX_RETRIES) {
+      const delay = BASE_RETRY_DELAY * Math.pow(2, attempt) + Math.random() * 1000;
+      logger.warn({ group: group.name, attempt: attempt + 1, delay: Math.round(delay) }, 'Retrying agent after transient error');
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+
+  logger.error({ group: group.name, maxRetries: MAX_RETRIES }, 'Agent failed after all retries');
+  return 'error';
 }
 
 async function runAgent(
@@ -462,6 +691,8 @@ async function runAgent(
       }
     : undefined;
 
+  await executeHooks('before_agent_run', { group: group.name, groupFolder: group.folder, chatJid });
+
   try {
     const output = await runContainerAgent(
       group,
@@ -476,11 +707,44 @@ async function runAgent(
     }
 
     if (output.status === 'error') {
+      // Auto-compact on context overflow and retry once
+      if (output.contextOverflow && AUTO_COMPACT) {
+        logger.info({ group: group.name }, 'Context overflow detected, attempting auto-compaction');
+        try {
+          const compactionResult = await compactSession(s.sessions, { groupFolder: group.folder });
+          logCompaction(compactionResult.groupFolder, compactionResult.originalTokens, compactionResult.compactedTokens, compactionResult.model);
+          logger.info({ group: group.name, reduction: `${Math.round((1 - compactionResult.compactedTokens / compactionResult.originalTokens) * 100)}%` }, 'Auto-compaction complete, retrying agent');
+
+          // Retry with compacted session
+          const retryOutput = await runContainerAgent(
+            group,
+            { prompt, sessionId: s.sessions.getSession(group.folder), groupFolder: group.folder, chatJid, isMain, assistantName: ASSISTANT_NAME },
+            providerEnv,
+            (proc, containerName) => s.queue.registerProcess(chatJid, proc, containerName, group.folder),
+            wrappedOnOutput,
+          );
+
+          if (retryOutput.newSessionId) {
+            s.sessions.setSession(group.folder, retryOutput.newSessionId);
+          }
+
+          if (retryOutput.status === 'error') {
+            logger.error({ group: group.name, error: retryOutput.error }, 'Container agent error after compaction retry');
+            return 'error';
+          }
+          return 'success';
+        } catch (compErr) {
+          logger.error({ group: group.name, err: compErr }, 'Auto-compaction failed');
+        }
+      }
+
       logger.error({ group: group.name, error: output.error }, 'Container agent error');
       return 'error';
     }
+    await executeHooks('after_agent_run', { group: group.name, groupFolder: group.folder, status: 'success' });
     return 'success';
   } catch (err) {
+    await executeHooks('after_agent_run', { group: group.name, groupFolder: group.folder, status: 'error', error: String(err) });
     logger.error({ group: group.name, err }, 'Agent error');
     return 'error';
   }

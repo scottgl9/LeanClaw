@@ -32,33 +32,61 @@ export interface PluginApi {
   logger: { info: Function; warn: Function; error: Function; debug: Function };
 }
 
+export interface PluginApiCallbacks {
+  onRegisterTool: (tool: RegisteredTool) => void;
+  onRegisterChannel: (channel: unknown) => void;
+  onRegisterProvider: (provider: unknown) => void;
+  onRegisterHook: (event: string, handler: Function) => void;
+  onRegisterHttpRoute: (route: { method: string; path: string; handler: Function }) => void;
+}
+
 export function createPluginApi(
   pluginId: string,
-  onRegisterTool: (tool: RegisteredTool) => void,
+  callbacks: PluginApiCallbacks,
 ): PluginApi {
   const pluginLogger = rootLogger.child({ pluginId });
 
-  const noop = () => {
-    pluginLogger.debug('Unimplemented SDK method called');
+  const noop = (methodName: string) => () => {
+    pluginLogger.debug({ method: methodName }, 'Unimplemented SDK method called');
   };
 
   return {
     registerTool(tool: Omit<RegisteredTool, 'pluginId'>) {
-      onRegisterTool({ ...tool, pluginId });
+      callbacks.onRegisterTool({ ...tool, pluginId });
     },
-    registerChannel: noop,
-    registerProvider: noop,
-    registerSpeechProvider: noop,
-    registerMediaUnderstandingProvider: noop,
-    registerImageGenerationProvider: noop,
-    registerWebSearchProvider: noop,
-    registerHttpRoute: noop,
-    registerHook: noop,
-    on: noop,
-    registerCommand: noop,
-    registerCli: noop,
-    registerService: noop,
-    registerContextEngine: noop,
+    registerChannel(channel: unknown) {
+      callbacks.onRegisterChannel(channel);
+    },
+    registerProvider(provider: unknown) {
+      callbacks.onRegisterProvider(provider);
+    },
+    registerHook(event: string, fn: Function) {
+      callbacks.onRegisterHook(event, fn);
+    },
+    on(event: string, fn: Function) {
+      // Alias for registerHook
+      callbacks.onRegisterHook(event, fn);
+    },
+    registerHttpRoute(route: unknown) {
+      const r = route as { method?: string; path?: string; handler?: Function };
+      if (r && r.path && r.handler) {
+        callbacks.onRegisterHttpRoute({
+          method: r.method || 'GET',
+          path: r.path,
+          handler: r.handler,
+        });
+      } else {
+        pluginLogger.warn('registerHttpRoute called with invalid route');
+      }
+    },
+    registerSpeechProvider: noop('registerSpeechProvider'),
+    registerMediaUnderstandingProvider: noop('registerMediaUnderstandingProvider'),
+    registerImageGenerationProvider: noop('registerImageGenerationProvider'),
+    registerWebSearchProvider: noop('registerWebSearchProvider'),
+    registerCommand: noop('registerCommand'),
+    registerCli: noop('registerCli'),
+    registerService: noop('registerService'),
+    registerContextEngine: noop('registerContextEngine'),
     config: {},
     logger: {
       info: pluginLogger.info.bind(pluginLogger),

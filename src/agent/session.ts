@@ -26,4 +26,46 @@ export class SessionManager {
     fs.mkdirSync(dir, { recursive: true });
     return dir;
   }
+
+  /** Read all conversation transcript files from the session directory */
+  getSessionHistory(groupFolder: string): string {
+    const dir = this.getSessionDir(groupFolder);
+    if (!fs.existsSync(dir)) return '';
+
+    const files = fs.readdirSync(dir)
+      .filter((f) => f.endsWith('.json') || f.endsWith('.jsonl') || f.endsWith('.txt'))
+      .sort();
+
+    const parts: string[] = [];
+    for (const file of files) {
+      try {
+        parts.push(fs.readFileSync(path.join(dir, file), 'utf-8'));
+      } catch {
+        // Skip unreadable files
+      }
+    }
+
+    return parts.join('\n');
+  }
+
+  /** Replace session history with compacted content */
+  replaceSessionHistory(groupFolder: string, compacted: string): void {
+    const dir = this.ensureSessionDir(groupFolder);
+
+    // Remove old transcript files
+    const files = fs.readdirSync(dir)
+      .filter((f) => f.endsWith('.json') || f.endsWith('.jsonl') || f.endsWith('.txt'));
+
+    for (const file of files) {
+      try {
+        fs.unlinkSync(path.join(dir, file));
+      } catch {
+        // Skip unremovable files
+      }
+    }
+
+    // Write compacted summary
+    const compactedFile = path.join(dir, 'compacted-summary.txt');
+    fs.writeFileSync(compactedFile, compacted, 'utf-8');
+  }
 }

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { z } from 'zod';
 
 // --- .env reader (inlined from NanoClaw's env.ts) ---
 
@@ -36,6 +37,116 @@ function readEnvFile(keys: string[]): Record<string, string> {
   return result;
 }
 
+// --- Config file schema ---
+
+const ConfigFileSchema = z.object({
+  assistant: z.object({
+    name: z.string().optional(),
+  }).optional(),
+  gateway: z.object({
+    port: z.number().int().min(1).max(65535).optional(),
+    host: z.string().optional(),
+    apiKey: z.string().optional(),
+  }).optional(),
+  container: z.object({
+    image: z.string().optional(),
+    timeout: z.number().int().min(0).optional(),
+    maxConcurrent: z.number().int().min(1).optional(),
+    maxOutputSize: z.number().int().min(0).optional(),
+    memoryLimit: z.string().optional(),
+    cpuLimit: z.string().optional(),
+  }).optional(),
+  provider: z.object({
+    default: z.string().optional(),
+    anthropicApiKey: z.string().optional(),
+    githubToken: z.string().optional(),
+  }).optional(),
+  heartbeat: z.object({
+    interval: z.number().int().min(0).optional(),
+    skipWhenBusy: z.boolean().optional(),
+  }).optional(),
+  compaction: z.object({
+    model: z.string().optional(),
+    autoCompact: z.boolean().optional(),
+  }).optional(),
+  approval: z.object({
+    timeout: z.number().int().min(0).optional(),
+  }).optional(),
+  skills: z.object({
+    dir: z.string().optional(),
+  }).optional(),
+  hooks: z.object({
+    enabled: z.boolean().optional(),
+  }).optional(),
+}).strict().optional();
+
+export type ConfigFile = z.infer<typeof ConfigFileSchema>;
+
+/** Map from config file JSON paths to LEANCLAW_* env var names */
+const CONFIG_KEY_MAP: Record<string, string> = {
+  'assistant.name': 'LEANCLAW_ASSISTANT_NAME',
+  'gateway.port': 'LEANCLAW_GATEWAY_PORT',
+  'gateway.host': 'LEANCLAW_GATEWAY_HOST',
+  'gateway.apiKey': 'LEANCLAW_GATEWAY_API_KEY',
+  'container.image': 'LEANCLAW_CONTAINER_IMAGE',
+  'container.timeout': 'LEANCLAW_CONTAINER_TIMEOUT',
+  'container.maxConcurrent': 'LEANCLAW_MAX_CONCURRENT_CONTAINERS',
+  'container.maxOutputSize': 'LEANCLAW_CONTAINER_MAX_OUTPUT_SIZE',
+  'container.memoryLimit': 'LEANCLAW_CONTAINER_MEMORY_LIMIT',
+  'container.cpuLimit': 'LEANCLAW_CONTAINER_CPU_LIMIT',
+  'provider.default': 'LEANCLAW_DEFAULT_PROVIDER',
+  'provider.anthropicApiKey': 'LEANCLAW_ANTHROPIC_API_KEY',
+  'provider.githubToken': 'LEANCLAW_GITHUB_TOKEN',
+  'heartbeat.interval': 'LEANCLAW_HEARTBEAT_INTERVAL',
+  'heartbeat.skipWhenBusy': 'LEANCLAW_HEARTBEAT_SKIP_WHEN_BUSY',
+  'compaction.model': 'LEANCLAW_COMPACTION_MODEL',
+  'compaction.autoCompact': 'LEANCLAW_AUTO_COMPACT',
+  'approval.timeout': 'LEANCLAW_APPROVAL_TIMEOUT',
+  'skills.dir': 'LEANCLAW_SKILLS_DIR',
+  'hooks.enabled': 'LEANCLAW_HOOKS_ENABLED',
+};
+
+/** Read and validate config file, returning flattened env-key values */
+export function readConfigFile(configPath?: string): Record<string, string> {
+  const filePath = configPath || path.join(os.homedir(), '.config', 'leanclaw', 'config.json');
+  let raw: string;
+  try {
+    raw = fs.readFileSync(filePath, 'utf-8');
+  } catch {
+    return {};
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+
+  const result = ConfigFileSchema.safeParse(parsed);
+  if (!result.success) {
+    return {};
+  }
+
+  const config = result.data;
+  if (!config) return {};
+
+  // Flatten nested config into LEANCLAW_* keys
+  const flat: Record<string, string> = {};
+  for (const [jsonPath, envKey] of Object.entries(CONFIG_KEY_MAP)) {
+    const [section, key] = jsonPath.split('.');
+    const sectionObj = config[section as keyof typeof config];
+    if (sectionObj && typeof sectionObj === 'object' && key in sectionObj) {
+      const value = (sectionObj as Record<string, unknown>)[key];
+      if (value !== undefined && value !== null) {
+        flat[envKey] = String(value);
+      }
+    }
+  }
+
+  return flat;
+}
+
 // Read .env values (secrets stay out of process.env)
 const envConfig = readEnvFile([
   'LEANCLAW_ASSISTANT_NAME',
@@ -51,10 +162,20 @@ const envConfig = readEnvFile([
   'LEANCLAW_IDLE_TIMEOUT',
   'LEANCLAW_HEARTBEAT_INTERVAL',
   'LEANCLAW_HEARTBEAT_SKIP_WHEN_BUSY',
+  'LEANCLAW_COMPACTION_MODEL',
+  'LEANCLAW_AUTO_COMPACT',
+  'LEANCLAW_APPROVAL_TIMEOUT',
+  'LEANCLAW_SKILLS_DIR',
+  'LEANCLAW_HOOKS_ENABLED',
+  'LEANCLAW_CONTAINER_MEMORY_LIMIT',
+  'LEANCLAW_CONTAINER_CPU_LIMIT',
 ]);
 
+// Read config file (lowest priority after env vars and .env file)
+const configFileValues = readConfigFile();
+
 function env(key: string): string | undefined {
-  return process.env[key] || envConfig[key];
+  return process.env[key] || envConfig[key] || configFileValues[key];
 }
 
 function envInt(key: string, fallback: number): number {
@@ -126,9 +247,35 @@ export const IPC_POLL_INTERVAL = 1000;
 export const HEARTBEAT_INTERVAL = envInt('LEANCLAW_HEARTBEAT_INTERVAL', 60000);
 export const HEARTBEAT_SKIP_WHEN_BUSY = envBool('LEANCLAW_HEARTBEAT_SKIP_WHEN_BUSY', true);
 
+// --- Compaction ---
+
+export const COMPACTION_MODEL = env('LEANCLAW_COMPACTION_MODEL') || '';
+export const AUTO_COMPACT = envBool('LEANCLAW_AUTO_COMPACT', true);
+
+// --- Exec Approvals ---
+
+export const APPROVAL_TIMEOUT = envInt('LEANCLAW_APPROVAL_TIMEOUT', 60000);
+
+// --- Skills ---
+
+export const SKILLS_DIR = env('LEANCLAW_SKILLS_DIR') || '';
+
+// --- Hooks ---
+
+export const HOOKS_ENABLED = envBool('LEANCLAW_HOOKS_ENABLED', true);
+
+// --- Container Resource Limits ---
+
+export const CONTAINER_MEMORY_LIMIT = env('LEANCLAW_CONTAINER_MEMORY_LIMIT') || '';
+export const CONTAINER_CPU_LIMIT = env('LEANCLAW_CONTAINER_CPU_LIMIT') || '';
+
 // --- Timezone ---
 
 export const TIMEZONE = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+// --- Config file path ---
+
+export const CONFIG_FILE_PATH = path.join(CONFIG_DIR, 'config.json');
 
 // --- Group folder validation ---
 

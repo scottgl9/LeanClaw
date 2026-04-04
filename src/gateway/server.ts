@@ -37,12 +37,21 @@ export interface GatewayClient {
   role: string;
 }
 
+export interface PluginHttpRouteEntry {
+  method: string;
+  path: string;
+  handler: (req: import('http').IncomingMessage, res: import('http').ServerResponse) => void | Promise<void>;
+  pluginId: string;
+}
+
 export interface GatewayServer {
   close(): Promise<void>;
   broadcast(event: EventFrame): void;
   getClients(): Map<string, GatewayClient>;
   registerMethod(method: string, handler: MethodHandler): void;
   setPluginTools(tools: Array<{ name: string; description: string; pluginId: string }>): void;
+  setPluginHttpRoutes(routes: PluginHttpRouteEntry[]): void;
+  getPluginToolsCatalog(): Array<{ name: string; description: string; pluginId: string }>;
 }
 
 export function startGatewayServer(
@@ -171,6 +180,34 @@ export function startGatewayServer(
     version: '0.0.0',
   }));
 
+  // --- Node pairing (optional per spec, stubs for client compatibility) ---
+  registerMethod('node.pair.request', async (params) => {
+    const { deviceId } = (params || {}) as { deviceId?: string };
+    return { ok: true, requestId: randomUUID(), deviceId: deviceId || 'unknown', status: 'pending' };
+  });
+  registerMethod('node.pair.list', async () => ({ pending: [], paired: [] }));
+  registerMethod('node.pair.approve', async (params) => {
+    const { requestId } = (params || {}) as { requestId?: string };
+    return { ok: true, requestId, approved: true };
+  });
+  registerMethod('node.pair.reject', async (params) => {
+    const { requestId } = (params || {}) as { requestId?: string };
+    return { ok: true, requestId, rejected: true };
+  });
+  registerMethod('node.pair.verify', async (params) => {
+    const { deviceId } = (params || {}) as { deviceId?: string };
+    return { ok: true, deviceId, verified: true };
+  });
+  registerMethod('node.invoke', async () => ({ ok: true, result: null }));
+
+  // --- Talk config (OpenClaw UI compat) ---
+  registerMethod('talk.config', async () => ({ channels: [], defaults: {} }));
+
+  // --- Wizard/update stubs ---
+  registerMethod('wizard.start', async () => ({ ok: true, status: 'not_supported' }));
+  registerMethod('update.run', async () => ({ ok: true, status: 'not_supported' }));
+  registerMethod('config.apply', async () => ({ ok: true }));
+
   registerMethod('send', async (params) => {
     // Legacy send — forward to chat.send
     const handler = methods.get('chat.send');
@@ -178,10 +215,79 @@ export function startGatewayServer(
     return { error: 'chat.send not available' };
   });
 
+  // --- Plugin HTTP routes ---
+  let pluginRoutes: PluginHttpRouteEntry[] = [];
+
   // --- HTTP server ---
-  const httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
+  const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     // Handle health endpoints
     if (handleHealthRequest(req, res)) return;
+
+    // Handle POST /tools/invoke
+    if (req.method === 'POST' && req.url === '/tools/invoke') {
+      const authToken = extractBearerToken(req.headers?.authorization);
+      if (!validateApiKey(authToken)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      let body = '';
+      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      req.on('end', async () => {
+        try {
+          const { toolName, params } = JSON.parse(body);
+          if (!toolName) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'toolName is required' }));
+            return;
+          }
+          const tool = pluginToolsCatalog.find((t) => t.name === toolName);
+          if (!tool) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `Tool not found: ${toolName}` }));
+            return;
+          }
+          // Find the actual executable tool from the method handler
+          const catalogHandler = methods.get('tools.invoke');
+          if (catalogHandler) {
+            const result = await catalogHandler({ toolName, params }, '');
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(result));
+          } else {
+            res.writeHead(501, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'tools.invoke method not registered' }));
+          }
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'Internal error' }));
+        }
+      });
+      return;
+    }
+
+    // Handle plugin HTTP routes
+    for (const route of pluginRoutes) {
+      if (req.method === route.method && req.url === route.path) {
+        // Require auth for plugin routes
+        const authToken = extractBearerToken(req.headers?.authorization);
+        if (!validateApiKey(authToken)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+        try {
+          await route.handler(req, res);
+        } catch (err) {
+          logger.error({ path: route.path, pluginId: route.pluginId, err }, 'Plugin HTTP route error');
+          if (!res.writableEnded) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Plugin route error' }));
+          }
+        }
+        return;
+      }
+    }
 
     // Everything else is 404
     res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -393,6 +499,12 @@ export function startGatewayServer(
         pluginToolsCatalog = tools;
       };
 
+      const setPluginHttpRoutes = (routes: PluginHttpRouteEntry[]) => {
+        pluginRoutes = routes;
+      };
+
+      const getPluginToolsCatalog = () => pluginToolsCatalog;
+
       const server: GatewayServer = {
         async close() {
           clearInterval(tickTimer);
@@ -418,6 +530,8 @@ export function startGatewayServer(
         },
         registerMethod,
         setPluginTools,
+        setPluginHttpRoutes,
+        getPluginToolsCatalog,
       };
 
       resolve(server);
