@@ -1,4 +1,4 @@
-import { ANTHROPIC_API_KEY } from '../config.js';
+import { ANTHROPIC_API_KEY, COMPACTION_MODEL } from '../config.js';
 import { logger } from '../logger.js';
 import type { AuthResult, LLMProvider, ProviderAuthConfig } from '../types.js';
 
@@ -9,9 +9,16 @@ const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   'claude-haiku-4-5': { input: 0.80, output: 4.0 },
 };
 
+const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  'claude-opus-4-6': 200_000,
+  'claude-sonnet-4-6': 200_000,
+  'claude-haiku-4-5': 200_000,
+};
+
 export class AnthropicProvider implements LLMProvider {
   id = 'anthropic';
   name = 'Anthropic Claude';
+  contextWindowSize = 200_000;
 
   private apiKey: string | undefined;
   private oauthToken: string | undefined;
@@ -64,5 +71,48 @@ export class AnthropicProvider implements LLMProvider {
 
   setModel(model: string): void {
     this.model = model;
+    this.contextWindowSize = MODEL_CONTEXT_WINDOWS[model] || 200_000;
+  }
+
+  async summarize(text: string, instructions?: string, model?: string): Promise<string> {
+    const apiKey = this.apiKey;
+    if (!apiKey) throw new Error('Anthropic API key not configured for compaction');
+
+    const compactModel = model || COMPACTION_MODEL || 'claude-haiku-4-5';
+
+    const systemPrompt = [
+      'You are a conversation compactor. Summarize the following conversation history into a concise but complete summary.',
+      'Preserve all important context, decisions, facts, and action items.',
+      'Remove redundant exchanges, greetings, and filler.',
+      'Output only the summary, no preamble.',
+      instructions ? `Additional instructions: ${instructions}` : '',
+    ].filter(Boolean).join('\n');
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: compactModel,
+        max_tokens: 4096,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: text }],
+      }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Anthropic API error (${response.status}): ${errorBody}`);
+    }
+
+    const data = await response.json() as { content: Array<{ type: string; text: string }> };
+    const textBlock = data.content?.find((b) => b.type === 'text');
+    if (!textBlock?.text) throw new Error('No text in compaction response');
+
+    logger.info({ model: compactModel, inputLen: text.length, outputLen: textBlock.text.length }, 'Session compacted');
+    return textBlock.text;
   }
 }

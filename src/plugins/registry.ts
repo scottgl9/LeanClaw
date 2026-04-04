@@ -2,9 +2,17 @@ import type { PluginRecord } from '../types.js';
 import type { RegisteredTool } from './plugin-api.js';
 import { logger } from '../logger.js';
 
+export interface PluginHttpRoute {
+  method: string;
+  path: string;
+  handler: (req: unknown, res: unknown) => void | Promise<void>;
+  pluginId: string;
+}
+
 export class PluginRegistry {
   private plugins = new Map<string, PluginRecord>();
   private allTools: RegisteredTool[] = [];
+  private httpRoutes: PluginHttpRoute[] = [];
 
   register(plugin: PluginRecord): void {
     this.plugins.set(plugin.id, plugin);
@@ -23,6 +31,7 @@ export class PluginRegistry {
     const existed = this.plugins.delete(id);
     if (existed) {
       this.allTools = this.allTools.filter((t) => t.pluginId !== id);
+      this.httpRoutes = this.httpRoutes.filter((r) => r.pluginId !== id);
       logger.info({ pluginId: id }, 'Plugin unloaded');
     }
     return existed;
@@ -35,6 +44,7 @@ export class PluginRegistry {
   clear(): void {
     this.plugins.clear();
     this.allTools = [];
+    this.httpRoutes = [];
   }
 
   registerTool(tool: RegisteredTool): void {
@@ -44,6 +54,15 @@ export class PluginRegistry {
 
   getTools(): RegisteredTool[] {
     return this.allTools;
+  }
+
+  registerHttpRoute(route: PluginHttpRoute): void {
+    this.httpRoutes.push(route);
+    logger.info({ pluginId: route.pluginId, method: route.method, path: route.path }, 'HTTP route registered');
+  }
+
+  getHttpRoutes(): PluginHttpRoute[] {
+    return this.httpRoutes;
   }
 }
 

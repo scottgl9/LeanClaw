@@ -12,6 +12,8 @@ import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
+  CONTAINER_MEMORY_LIMIT,
+  CONTAINER_CPU_LIMIT,
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
@@ -43,6 +45,7 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  contextOverflow?: boolean;
 }
 
 interface VolumeMount {
@@ -191,6 +194,14 @@ function buildContainerArgs(
   }
 
   args.push(...hostGatewayArgs());
+
+  // Container resource limits
+  if (CONTAINER_MEMORY_LIMIT) {
+    args.push('--memory', CONTAINER_MEMORY_LIMIT);
+  }
+  if (CONTAINER_CPU_LIMIT) {
+    args.push('--cpus', CONTAINER_CPU_LIMIT);
+  }
 
   // Run as host user for bind-mount file access
   const hostUid = process.getuid?.();
@@ -342,8 +353,16 @@ export async function runContainerAgent(
       fs.writeFileSync(logFile, logLines.join('\n'));
 
       if (code !== 0) {
-        logger.error({ group: group.name, code, duration }, 'Container exited with error');
-        resolve({ status: 'error', result: null, error: `Container exited with code ${code}: ${stderr.slice(-200)}` });
+        const errorTail = stderr.slice(-500) + stdout.slice(-500);
+        const isContextOverflow = /prompt.*(too long|too large)|context.*overflow|token.*limit.*exceeded|max.*token/i.test(errorTail);
+
+        logger.error({ group: group.name, code, duration, contextOverflow: isContextOverflow }, 'Container exited with error');
+        resolve({
+          status: 'error',
+          result: null,
+          error: `Container exited with code ${code}: ${stderr.slice(-200)}`,
+          contextOverflow: isContextOverflow,
+        });
         return;
       }
 

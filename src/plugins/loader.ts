@@ -11,6 +11,10 @@ import { logger } from '../logger.js';
 import type { PluginManifest, PluginRecord } from '../types.js';
 import { PluginRegistry, getActiveRegistry } from './registry.js';
 import { createPluginApi } from './plugin-api.js';
+import { registerChannel as registerChannelFactory } from '../channels/registry.js';
+import { registerProvider } from '../providers/base.js';
+import { registerHook as registerHookEvent } from '../hooks/registry.js';
+import type { LLMProvider, Channel } from '../types.js';
 
 // --- Manifest schema ---
 
@@ -191,7 +195,43 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<PluginRe
           try {
             const entry = (module as any)?.default ?? module;
             if (typeof entry?.register === 'function') {
-              const api = createPluginApi(manifest.id, (tool) => registry.registerTool(tool));
+              const api = createPluginApi(manifest.id, {
+                onRegisterTool: (tool) => registry.registerTool(tool),
+                onRegisterChannel: (channel) => {
+                  const ch = channel as { name: string; factory?: Function } | Channel;
+                  if ('factory' in ch && typeof ch.factory === 'function') {
+                    registerChannelFactory(ch.name, ch.factory as any);
+                    logger.info({ pluginId: manifest.id, channel: ch.name }, 'Channel registered via plugin');
+                  } else if ('connect' in ch && typeof (ch as Channel).connect === 'function') {
+                    // Direct channel instance — wrap in a factory
+                    const instance = ch as Channel;
+                    registerChannelFactory(instance.name, () => instance);
+                    logger.info({ pluginId: manifest.id, channel: instance.name }, 'Channel instance registered via plugin');
+                  } else {
+                    logger.warn({ pluginId: manifest.id }, 'registerChannel called with unrecognized format');
+                  }
+                },
+                onRegisterProvider: (provider) => {
+                  const p = provider as LLMProvider;
+                  if (p && p.id && typeof p.isConfigured === 'function') {
+                    registerProvider(p);
+                    logger.info({ pluginId: manifest.id, provider: p.id }, 'Provider registered via plugin');
+                  } else {
+                    logger.warn({ pluginId: manifest.id }, 'registerProvider called with invalid provider');
+                  }
+                },
+                onRegisterHook: (event, handler) => {
+                  registerHookEvent(manifest.id, event, handler as any);
+                },
+                onRegisterHttpRoute: (route) => {
+                  registry.registerHttpRoute({
+                    method: route.method,
+                    path: route.path,
+                    handler: route.handler as any,
+                    pluginId: manifest.id,
+                  });
+                },
+              });
               await entry.register(api);
               logger.info({ pluginId: manifest.id }, 'Plugin registered via SDK');
             }

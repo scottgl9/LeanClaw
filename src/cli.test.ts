@@ -17,12 +17,17 @@ function runCli(args: string): string {
 }
 
 describe('CLI', () => {
-  it('shows help', () => {
+  it('shows help with all commands', () => {
     const output = runCli('help');
     expect(output).toContain('LeanClaw');
     expect(output).toContain('start');
     expect(output).toContain('config');
     expect(output).toContain('version');
+    expect(output).toContain('doctor');
+    expect(output).toContain('health');
+    expect(output).toContain('gateway-status');
+    expect(output).toContain('plugins-list');
+    expect(output).toContain('skills-list');
   });
 
   it('shows config', () => {
@@ -41,5 +46,23 @@ describe('CLI', () => {
   it('rejects unknown commands', () => {
     const output = runCli('nonexistent');
     expect(output).toContain('Unknown command');
+  });
+
+  it('shows skills list', () => {
+    const output = runCli('skills-list');
+    // Should either list skills or say none installed
+    expect(output).toMatch(/skills|No skills/i);
+  });
+
+  it('shows plugins list', () => {
+    const output = runCli('plugins-list');
+    expect(output).toMatch(/plugins|No plugins/i);
+  });
+
+  it('runs doctor checks', () => {
+    const output = runCli('doctor');
+    expect(output).toContain('LeanClaw Doctor');
+    expect(output).toContain('Docker');
+    expect(output).toContain('Config');
   });
 });

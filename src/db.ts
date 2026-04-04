@@ -111,6 +111,16 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_provider_usage_group ON provider_usage(group_name, recorded_at);
 
+    CREATE TABLE IF NOT EXISTS compaction_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_folder TEXT NOT NULL,
+      original_tokens INTEGER NOT NULL,
+      compacted_tokens INTEGER NOT NULL,
+      model TEXT NOT NULL,
+      compacted_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_compaction_group ON compaction_log(group_folder, compacted_at);
+
     CREATE TABLE IF NOT EXISTS schema_version (
       version INTEGER PRIMARY KEY
     );
@@ -421,6 +431,23 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     };
   }
   return result;
+}
+
+// --- Compaction log ---
+
+export function logCompaction(groupFolder: string, originalTokens: number, compactedTokens: number, model: string): void {
+  db.prepare(`
+    INSERT INTO compaction_log (group_folder, original_tokens, compacted_tokens, model, compacted_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(groupFolder, originalTokens, compactedTokens, model, new Date().toISOString());
+}
+
+export function getCompactionHistory(groupFolder: string, limit: number = 20): Array<{
+  group_folder: string; original_tokens: number; compacted_tokens: number; model: string; compacted_at: string;
+}> {
+  return db.prepare(
+    'SELECT * FROM compaction_log WHERE group_folder = ? ORDER BY compacted_at DESC LIMIT ?',
+  ).all(groupFolder, limit) as any;
 }
 
 // --- Audit log ---
