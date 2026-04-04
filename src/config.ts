@@ -61,6 +61,11 @@ const ConfigFileSchema = z.object({
     anthropicApiKey: z.string().optional(),
     githubToken: z.string().optional(),
   }).optional(),
+  localProvider: z.object({
+    baseUrl: z.string().optional(),
+    apiKey: z.string().optional(),
+    model: z.string().optional(),
+  }).optional(),
   heartbeat: z.object({
     interval: z.number().int().min(0).optional(),
     skipWhenBusy: z.boolean().optional(),
@@ -104,6 +109,9 @@ const CONFIG_KEY_MAP: Record<string, string> = {
   'approval.timeout': 'LEANCLAW_APPROVAL_TIMEOUT',
   'skills.dir': 'LEANCLAW_SKILLS_DIR',
   'hooks.enabled': 'LEANCLAW_HOOKS_ENABLED',
+  'localProvider.baseUrl': 'LEANCLAW_LOCAL_LLM_BASE_URL',
+  'localProvider.apiKey': 'LEANCLAW_LOCAL_LLM_API_KEY',
+  'localProvider.model': 'LEANCLAW_LOCAL_LLM_MODEL',
 };
 
 /** Read and validate config file, returning flattened env-key values */
@@ -134,13 +142,18 @@ export function readConfigFile(configPath?: string): Record<string, string> {
   // Flatten nested config into LEANCLAW_* keys
   const flat: Record<string, string> = {};
   for (const [jsonPath, envKey] of Object.entries(CONFIG_KEY_MAP)) {
-    const [section, key] = jsonPath.split('.');
-    const sectionObj = config[section as keyof typeof config];
-    if (sectionObj && typeof sectionObj === 'object' && key in sectionObj) {
-      const value = (sectionObj as Record<string, unknown>)[key];
-      if (value !== undefined && value !== null) {
-        flat[envKey] = String(value);
+    const parts = jsonPath.split('.');
+    let current: unknown = config;
+    for (const part of parts) {
+      if (current && typeof current === 'object' && part in current) {
+        current = (current as Record<string, unknown>)[part];
+      } else {
+        current = undefined;
+        break;
       }
+    }
+    if (current !== undefined && current !== null) {
+      flat[envKey] = String(current);
     }
   }
 
@@ -169,6 +182,9 @@ const envConfig = readEnvFile([
   'LEANCLAW_HOOKS_ENABLED',
   'LEANCLAW_CONTAINER_MEMORY_LIMIT',
   'LEANCLAW_CONTAINER_CPU_LIMIT',
+  'LEANCLAW_LOCAL_LLM_BASE_URL',
+  'LEANCLAW_LOCAL_LLM_API_KEY',
+  'LEANCLAW_LOCAL_LLM_MODEL',
 ]);
 
 // Read config file (lowest priority after env vars and .env file)
@@ -269,6 +285,12 @@ export const HOOKS_ENABLED = envBool('LEANCLAW_HOOKS_ENABLED', true);
 export const CONTAINER_MEMORY_LIMIT = env('LEANCLAW_CONTAINER_MEMORY_LIMIT') || '';
 export const CONTAINER_CPU_LIMIT = env('LEANCLAW_CONTAINER_CPU_LIMIT') || '';
 
+// --- Local LLM Provider (OpenAI-compatible: vLLM, SGLang, llama.cpp, Ollama, etc.) ---
+
+export const LOCAL_LLM_BASE_URL = env('LEANCLAW_LOCAL_LLM_BASE_URL') || '';
+export const LOCAL_LLM_API_KEY = env('LEANCLAW_LOCAL_LLM_API_KEY') || '';
+export const LOCAL_LLM_MODEL = env('LEANCLAW_LOCAL_LLM_MODEL') || '';
+
 // --- Timezone ---
 
 export const TIMEZONE = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -315,4 +337,47 @@ export function resolveGroupIpcPath(folder: string): string {
     throw new Error(`Path escapes base directory: ${ipcPath}`);
   }
   return ipcPath;
+}
+
+// --- Config file write ---
+
+function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
+  const result = { ...target };
+  for (const [key, value] of Object.entries(source)) {
+    if (value && typeof value === 'object' && !Array.isArray(value) && target[key] && typeof target[key] === 'object' && !Array.isArray(target[key])) {
+      result[key] = deepMerge(target[key] as Record<string, unknown>, value as Record<string, unknown>);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+export function writeConfigFile(updates: NonNullable<ConfigFile>): void {
+  const filePath = CONFIG_FILE_PATH;
+  const dir = path.dirname(filePath);
+
+  // Ensure config directory exists
+  fs.mkdirSync(dir, { recursive: true });
+
+  // Read existing config
+  let existing: Record<string, unknown> = {};
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    existing = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    // File doesn't exist or is invalid — start fresh
+  }
+
+  // Deep merge
+  const merged = deepMerge(existing, updates as Record<string, unknown>);
+
+  // Validate
+  const validated = ConfigFileSchema.safeParse(merged);
+  if (!validated.success) {
+    throw new Error(`Invalid config: ${validated.error.message}`);
+  }
+
+  // Write
+  fs.writeFileSync(filePath, JSON.stringify(merged, null, 2) + '\n', 'utf-8');
 }

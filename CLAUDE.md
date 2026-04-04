@@ -28,6 +28,7 @@ Single Node.js process with in-process WebSocket gateway. Docker container isola
 | `src/providers/anthropic.ts` | Anthropic Claude (API key + OAuth + summarize) |
 | `src/providers/copilot.ts` | GitHub Copilot (token + OAuth) |
 | `src/providers/token-counter.ts` | Token budget management (daily/monthly) |
+| `src/providers/openai-compat.ts` | OpenAI-compatible local LLM provider (vLLM, SGLang, llama.cpp, Ollama) |
 | `src/agent/container.ts` | Docker container runner, volume mounts, resource limits |
 | `src/agent/session.ts` | Per-group session management with history read/write |
 | `src/agent/scheduler.ts` | Cron/interval/once scheduler + heartbeat loop |
@@ -43,6 +44,9 @@ Single Node.js process with in-process WebSocket gateway. Docker container isola
 | `src/hooks/pre-run.ts` | Pre-run script hooks (exit 0/10/other) |
 | `src/hooks/registry.ts` | Plugin hook event registry (lifecycle hooks) |
 | `src/hooks/webhook.ts` | Webhook hook executor (HTTP POST to URLs) |
+| `src/nodes/types.ts` | Node type definitions (NodeInfo, PendingWork) |
+| `src/nodes/registry.ts` | Node registry (register/unregister/list/get/rename/invoke/sendEvent + pairing) |
+| `src/nodes/pending.ts` | Pending work queue (enqueue/drain/pull/ack with TTL, max 64 per node) |
 | `src/skills/manager.ts` | Skill discovery, listing, install, update |
 | `src/skills/types.ts` | Skill manifest and entry types |
 | `src/router.ts` | Message formatting (XML) and outbound routing |
@@ -80,6 +84,7 @@ Single Node.js process with in-process WebSocket gateway. Docker container isola
   "heartbeat": { "interval": 60000, "skipWhenBusy": true },
   "compaction": { "model": "claude-haiku-4-5", "autoCompact": true },
   "approval": { "timeout": 60000 },
+  "localProvider": { "baseUrl": "http://localhost:8000/v1", "apiKey": "...", "model": "my-model" },
   "skills": { "dir": "/path/to/skills" },
   "hooks": { "enabled": true }
 }
@@ -108,6 +113,9 @@ Single Node.js process with in-process WebSocket gateway. Docker container isola
 | `LEANCLAW_APPROVAL_TIMEOUT` | `60000` | Exec approval timeout (ms) |
 | `LEANCLAW_SKILLS_DIR` | _(none)_ | Extra skills directory |
 | `LEANCLAW_HOOKS_ENABLED` | `true` | Enable lifecycle hooks |
+| `LEANCLAW_LOCAL_LLM_BASE_URL` | _(none)_ | Base URL for OpenAI-compatible local LLM server |
+| `LEANCLAW_LOCAL_LLM_API_KEY` | _(none)_ | API key for local LLM server (if required) |
+| `LEANCLAW_LOCAL_LLM_MODEL` | _(auto-discover)_ | Model name for local LLM (auto-discovers from `/v1/models` if unset) |
 
 ## Conventions
 
@@ -122,7 +130,7 @@ Single Node.js process with in-process WebSocket gateway. Docker container isola
 ```bash
 npm run dev          # Run with hot reload (tsx)
 npm run build        # Compile TypeScript
-npm test             # Run tests (385+ tests)
+npm test             # Run tests (621+ tests)
 npm run test:watch   # Watch mode
 npm run typecheck    # Type check without emitting
 npm run lint         # ESLint
@@ -151,12 +159,18 @@ OpenClaw Protocol v3 on `ws://127.0.0.1:18789`. Connect handshake: server sends 
 - `agent` — Execute agent in container with streaming events
 - `agent.wait` — Wait for agent run completion (timeout support)
 - `chat.send` / `chat.abort` — Send/abort messages
-- `sessions.list` / `sessions.compact` — Session management + compaction
-- `exec.approval.resolve` / `exec.approval.list` — Tool execution approval flow
+- `sessions.list` / `sessions.compact` / `sessions.abort` / `sessions.preview` / `sessions.usage` — Session management
+- `sessions.subscribe` / `sessions.unsubscribe` / `sessions.messages.subscribe` / `sessions.messages.unsubscribe` — Session subscriptions
+- `exec.approval.resolve` / `exec.approval.request` / `exec.approval.waitDecision` / `exec.approvals.get` / `exec.approvals.set` — Tool execution approval flow
 - `tools.catalog` / `tools.effective` / `tools.invoke` — Tool discovery and execution
 - `skills.bins` / `skills.status` / `skills.search` / `skills.install` / `skills.update` — Skill management
-- `config.get` / `providers.list` / `groups.list` / `channels.status` — Configuration queries
-- `cron.list` / `cron.add` / `cron.remove` / `cron.run` — Task scheduling
+- `config.get` / `config.set` / `config.patch` / `providers.list` / `groups.list` / `channels.status` — Configuration queries and mutation
+- `cron.list` / `cron.add` / `cron.remove` / `cron.run` / `cron.update` / `cron.runs` — Task scheduling
+- `agents.create` / `agents.update` / `agents.delete` / `agents.list` — Agent CRUD
+- `node.list` / `node.describe` / `node.rename` / `node.invoke` / `node.invoke.result` / `node.event` — Node registry
+- `node.pair.request` / `node.pair.list` / `node.pair.approve` / `node.pair.reject` / `node.pair.verify` — Node pairing
+- `node.pending.enqueue` / `node.pending.drain` / `node.pending.pull` / `node.pending.ack` — Node pending work
+- `logs.tail` — Audit log entries
 - `system-presence` / `system-event` — Presence and system events
 
 ### HTTP Endpoints

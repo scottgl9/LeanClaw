@@ -121,6 +121,17 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_compaction_group ON compaction_log(group_folder, compacted_at);
 
+    CREATE TABLE IF NOT EXISTS agents (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      model TEXT,
+      system_prompt TEXT,
+      tools TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS schema_version (
       version INTEGER PRIMARY KEY
     );
@@ -481,4 +492,69 @@ export function getProviderUsage(group: string, since?: string): TokenBudget[] {
     WHERE group_name = ? AND recorded_at >= ?
     GROUP BY group_name, provider
   `).all(group, sinceDate) as TokenBudget[];
+}
+
+// --- Task run logs ---
+
+export function getTaskRunLogs(taskId: string, limit: number = 50): TaskRunLog[] {
+  return db.prepare(
+    'SELECT task_id, run_at, duration_ms, status, result, error FROM task_run_logs WHERE task_id = ? ORDER BY run_at DESC LIMIT ?',
+  ).all(taskId, limit) as TaskRunLog[];
+}
+
+// --- Agents ---
+
+export interface AgentDefinition {
+  id: string;
+  name: string;
+  description?: string;
+  model?: string;
+  system_prompt?: string;
+  tools?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export function createAgent(agent: Omit<AgentDefinition, 'created_at' | 'updated_at'> & { created_at?: string; updated_at?: string }): AgentDefinition {
+  const now = new Date().toISOString();
+  const record: AgentDefinition = {
+    ...agent,
+    created_at: agent.created_at || now,
+    updated_at: agent.updated_at || now,
+  };
+  db.prepare(`
+    INSERT INTO agents (id, name, description, model, system_prompt, tools, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(record.id, record.name, record.description || null, record.model || null,
+    record.system_prompt || null, record.tools || null, record.created_at, record.updated_at);
+  return record;
+}
+
+export function getAgentById(id: string): AgentDefinition | undefined {
+  return db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as AgentDefinition | undefined;
+}
+
+export function getAllAgents(): AgentDefinition[] {
+  return db.prepare('SELECT * FROM agents ORDER BY created_at DESC').all() as AgentDefinition[];
+}
+
+export function updateAgent(id: string, updates: Partial<Pick<AgentDefinition, 'name' | 'description' | 'model' | 'system_prompt' | 'tools'>>): boolean {
+  const fields: string[] = ['updated_at = ?'];
+  const values: unknown[] = [new Date().toISOString()];
+
+  for (const [key, value] of Object.entries(updates)) {
+    if (value !== undefined) {
+      fields.push(`${key} = ?`);
+      values.push(value);
+    }
+  }
+
+  values.push(id);
+  const result = db.prepare(`UPDATE agents SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  return result.changes > 0;
+}
+
+export function deleteAgent(id: string): boolean {
+  const result = db.prepare('DELETE FROM agents WHERE id = ?').run(id);
+  return result.changes > 0;
 }

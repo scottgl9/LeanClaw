@@ -6,7 +6,10 @@ All LeanClaw configuration is via environment variables with the `LEANCLAW_*` pr
 
 1. Environment variables (highest priority)
 2. `.env` file in project root
-3. Built-in defaults (lowest priority)
+3. Config file at `~/.config/leanclaw/config.json`
+4. Built-in defaults (lowest priority)
+
+The `config.set` and `config.patch` gateway methods write changes to `~/.config/leanclaw/config.json` at runtime, broadcasting a `config.changed` event to connected clients.
 
 ## Environment Variables
 
@@ -24,7 +27,28 @@ All LeanClaw configuration is via environment variables with the `LEANCLAW_*` pr
 |----------|---------|-------------|
 | `LEANCLAW_ANTHROPIC_API_KEY` | _(none)_ | Anthropic Claude API key |
 | `LEANCLAW_GITHUB_TOKEN` | _(none)_ | GitHub Copilot token |
-| `LEANCLAW_DEFAULT_PROVIDER` | `anthropic` | Default provider (`anthropic` or `copilot`) |
+| `LEANCLAW_DEFAULT_PROVIDER` | `anthropic` | Default provider (`anthropic`, `copilot`, or `local`) |
+
+### Local LLM Provider
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LEANCLAW_LOCAL_LLM_BASE_URL` | _(none)_ | Base URL for OpenAI-compatible server (e.g., `http://localhost:8000/v1`) |
+| `LEANCLAW_LOCAL_LLM_API_KEY` | _(none)_ | API key for the local LLM server (if required) |
+| `LEANCLAW_LOCAL_LLM_MODEL` | _(auto-discover)_ | Model name; auto-discovers from server's `/v1/models` if unset |
+
+The local provider (registered as `local`) works with vLLM, SGLang, llama.cpp, Ollama, or any OpenAI-compatible server. It supports chat completions for both inference and summarize/compaction.
+
+In `config.json`, use the `localProvider` section:
+```json
+{
+  "localProvider": {
+    "baseUrl": "http://localhost:8000/v1",
+    "apiKey": "optional-key",
+    "model": "my-model"
+  }
+}
+```
 
 ### Container
 

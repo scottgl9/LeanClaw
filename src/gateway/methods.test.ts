@@ -7,7 +7,7 @@ import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import WebSocket from 'ws';
 import { startGatewayServer, type GatewayServer } from './server.js';
 import { PROTOCOL_VERSION } from './protocol.js';
-import { _initTestDatabase, createTask, getTaskById, setRegisteredGroup, setSession, storeMessage, storeChatMetadata } from '../db.js';
+import { _initTestDatabase, createTask, getTaskById, setRegisteredGroup, setSession, storeMessage, storeChatMetadata, logTaskRun, createAgent, getAllAgents, getAgentById, deleteAgent, logAuditEvent, getAuditEvents } from '../db.js';
 
 let server: GatewayServer | null = null;
 let testPort = 29000;
@@ -449,7 +449,7 @@ describe('Phase 4 gateway methods (system-presence, system-event, agent, tools.e
     expect(methodsList).toContain('skills.bins');
   });
 
-  it('features.events includes presence, system, exec.approval.requested, shutdown', async () => {
+  it('features.events includes presence, system, exec.approval.requested, shutdown, node events', async () => {
     server = await startGatewayServer(testPort);
 
     const helloOk = await new Promise<any>((resolve, reject) => {
@@ -475,5 +475,363 @@ describe('Phase 4 gateway methods (system-presence, system-event, agent, tools.e
     expect(events).toContain('system');
     expect(events).toContain('exec.approval.requested');
     expect(events).toContain('shutdown');
+    expect(events).toContain('node.connected');
+    expect(events).toContain('node.disconnected');
+    expect(events).toContain('node.invoke.request');
+  });
+});
+
+describe('Node gateway methods', () => {
+  it('node.list returns empty array with no nodes', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'node.list');
+
+    expect(res.ok).toBe(true);
+    expect(res.payload).toEqual([]);
+    ws.close();
+  });
+
+  it('node.describe returns error for unknown nodeId', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'node.describe', { nodeId: 'unknown' });
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.error).toBeDefined();
+    ws.close();
+  });
+
+  it('node.rename returns false for unknown nodeId', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'node.rename', { nodeId: 'unknown', displayName: 'test' });
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.ok).toBe(false);
+    ws.close();
+  });
+
+  it('node.invoke returns error for unknown node', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'node.invoke', { nodeId: 'unknown', command: 'test' });
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.ok).toBe(false);
+    expect(res.payload.error).toContain('not connected');
+    ws.close();
+  });
+
+  it('node.event returns false for unknown node', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'node.event', { nodeId: 'unknown', event: 'test' });
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.ok).toBe(false);
+    ws.close();
+  });
+
+  it('node.pair.request creates pairing request', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'node.pair.request', { deviceId: 'dev-1', displayName: 'My Phone' });
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.ok).toBe(true);
+    expect(res.payload.requestId).toBeDefined();
+    expect(res.payload.status).toBe('pending');
+    ws.close();
+  });
+
+  it('node.pair.list returns pending requests', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+
+    await call(ws, 'node.pair.request', { deviceId: 'dev-1' });
+    const res = await call(ws, 'node.pair.list');
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.pending).toHaveLength(1);
+    expect(res.payload.pending[0].deviceId).toBe('dev-1');
+    ws.close();
+  });
+
+  it('node.pair.approve approves pending request', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+
+    const reqRes = await call(ws, 'node.pair.request', { deviceId: 'dev-1' });
+    const res = await call(ws, 'node.pair.approve', { requestId: reqRes.payload.requestId });
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.approved).toBe(true);
+    ws.close();
+  });
+
+  it('node.pair.reject removes pending request', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+
+    const reqRes = await call(ws, 'node.pair.request', { deviceId: 'dev-1' });
+    await call(ws, 'node.pair.reject', { requestId: reqRes.payload.requestId });
+
+    const listRes = await call(ws, 'node.pair.list');
+    expect(listRes.payload.pending).toHaveLength(0);
+    ws.close();
+  });
+
+  it('node.pair.verify returns false for non-connected node', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'node.pair.verify', { deviceId: 'unknown' });
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.verified).toBe(false);
+    ws.close();
+  });
+
+  it('node.pending.enqueue + drain round-trip', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+
+    const enqRes = await call(ws, 'node.pending.enqueue', {
+      nodeId: 'node-1', type: 'status.request', payload: { key: 'val' },
+    });
+    expect(enqRes.ok).toBe(true);
+    expect(enqRes.payload.ok).toBe(true);
+    expect(enqRes.payload.deduped).toBe(false);
+
+    const drainRes = await call(ws, 'node.pending.drain', { nodeId: 'node-1' });
+    expect(drainRes.ok).toBe(true);
+    expect(drainRes.payload.items).toHaveLength(1);
+    expect(drainRes.payload.items[0].type).toBe('status.request');
+
+    // Queue should be empty after drain
+    const drainRes2 = await call(ws, 'node.pending.drain', { nodeId: 'node-1' });
+    expect(drainRes2.payload.items).toHaveLength(0);
+    ws.close();
+  });
+
+  it('node.pending.ack removes item', async () => {
+    server = await startGatewayServer(testPort);
+    const ws = await connectAndAuth(testPort);
+
+    const enqRes = await call(ws, 'node.pending.enqueue', {
+      nodeId: 'node-1', type: 'test',
+    });
+    const itemId = enqRes.payload.itemId;
+
+    const ackRes = await call(ws, 'node.pending.ack', { nodeId: 'node-1', itemId });
+    expect(ackRes.ok).toBe(true);
+    expect(ackRes.payload.ok).toBe(true);
+    ws.close();
+  });
+
+  it('node role connect registers in node registry and appears in node.list', async () => {
+    server = await startGatewayServer(testPort);
+
+    // Connect as a node
+    const nodeWs = await new Promise<WebSocket>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}`);
+      ws.on('error', reject);
+      ws.once('message', () => {
+        ws.once('message', () => resolve(ws));
+        ws.send(JSON.stringify({
+          type: 'req', id: '1', method: 'connect',
+          params: {
+            minProtocol: PROTOCOL_VERSION, maxProtocol: PROTOCOL_VERSION,
+            client: { id: 'node-device-1', version: '1.0', platform: 'linux', mode: 'node', displayName: 'Test Node' },
+            role: 'node',
+            caps: ['screen'],
+            commands: ['system.run'],
+            device: { id: 'device-abc', publicKey: 'pk', signature: 'sig', signedAt: Date.now(), nonce: 'n' },
+          },
+        }));
+      });
+    });
+
+    // Connect as operator and check node.list
+    const opWs = await connectAndAuth(testPort);
+    const res = await call(opWs, 'node.list');
+
+    expect(res.ok).toBe(true);
+    expect(res.payload).toHaveLength(1);
+    expect(res.payload[0].nodeId).toBe('device-abc');
+    expect(res.payload[0].displayName).toBe('Test Node');
+    expect(res.payload[0].caps).toContain('screen');
+
+    nodeWs.close();
+    opWs.close();
+  });
+
+  it('features.methods includes node methods', async () => {
+    server = await startGatewayServer(testPort);
+
+    const helloOk = await new Promise<any>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}`);
+      ws.on('error', reject);
+      ws.once('message', () => {
+        ws.once('message', (data) => {
+          resolve(JSON.parse(data.toString()));
+          ws.close();
+        });
+        ws.send(JSON.stringify({
+          type: 'req', id: 'feat-1', method: 'connect',
+          params: {
+            minProtocol: PROTOCOL_VERSION, maxProtocol: PROTOCOL_VERSION,
+            client: { id: 'feat-test', version: '1.0', platform: 'linux', mode: 'test' },
+          },
+        }));
+      });
+    });
+
+    const methods: string[] = helloOk.payload.features.methods;
+    expect(methods).toContain('node.list');
+    expect(methods).toContain('node.describe');
+    expect(methods).toContain('node.rename');
+    expect(methods).toContain('node.invoke');
+    expect(methods).toContain('node.invoke.result');
+    expect(methods).toContain('node.event');
+    expect(methods).toContain('node.pair.request');
+    expect(methods).toContain('node.pair.list');
+    expect(methods).toContain('node.pair.approve');
+    expect(methods).toContain('node.pair.reject');
+    expect(methods).toContain('node.pair.verify');
+    expect(methods).toContain('node.pending.enqueue');
+    expect(methods).toContain('node.pending.drain');
+    expect(methods).toContain('node.pending.pull');
+    expect(methods).toContain('node.pending.ack');
+  });
+});
+
+describe('Phase 4 gateway method gaps', () => {
+  it('sessions.preview returns messages', async () => {
+    server = await startGatewayServer(testPort);
+
+    storeChatMetadata('chat1', new Date().toISOString());
+    storeMessage({ id: 'msg1', chat_jid: 'chat1', sender: 'user', sender_name: 'User', content: 'Hello', timestamp: new Date().toISOString() });
+
+    server.registerMethod('sessions.preview', async (params) => {
+      const { chatJid, limit } = (params || {}) as any;
+      const { getMessagesSince } = await import('../db.js');
+      return getMessagesSince(chatJid, '', 'Andy', limit || 20).map((m) => ({
+        id: m.id, sender: m.sender, content: m.content?.slice(0, 500), timestamp: m.timestamp,
+      }));
+    });
+
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'sessions.preview', { chatJid: 'chat1' });
+    expect(res.ok).toBe(true);
+    expect(res.payload.length).toBeGreaterThanOrEqual(1);
+    expect(res.payload[0].content).toBe('Hello');
+    ws.close();
+  });
+
+  it('cron.update modifies task', async () => {
+    createTask({
+      id: 'task-upd', group_folder: 'main', chat_jid: 'chat1',
+      prompt: 'Original', schedule_type: 'cron', schedule_value: '0 9 * * *',
+      context_mode: 'isolated', next_run: '2025-01-01T09:00:00Z',
+      status: 'active', created_at: new Date().toISOString(),
+    });
+
+    server = await startGatewayServer(testPort);
+    server.registerMethod('cron.update', async (params) => {
+      const { taskId, ...updates } = params as any;
+      const { updateTask: ut, getTaskById: gt } = await import('../db.js');
+      if (!gt(taskId)) throw new Error('not found');
+      ut(taskId, updates);
+      return { ok: true, taskId };
+    });
+
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'cron.update', { taskId: 'task-upd', prompt: 'Updated' });
+    expect(res.ok).toBe(true);
+
+    const task = getTaskById('task-upd');
+    expect(task!.prompt).toBe('Updated');
+    ws.close();
+  });
+
+  it('cron.runs returns run history', async () => {
+    createTask({
+      id: 'task-runs', group_folder: 'main', chat_jid: 'chat1',
+      prompt: 'Test', schedule_type: 'once', schedule_value: '2025-01-01T00:00:00Z',
+      context_mode: 'isolated', next_run: null, status: 'completed', created_at: new Date().toISOString(),
+    });
+    logTaskRun({ task_id: 'task-runs', run_at: new Date().toISOString(), duration_ms: 1234, status: 'success', result: 'Done', error: null });
+
+    server = await startGatewayServer(testPort);
+    server.registerMethod('cron.runs', async (params) => {
+      const { taskId, limit } = params as any;
+      const { getTaskRunLogs } = await import('../db.js');
+      return getTaskRunLogs(taskId, limit || 50);
+    });
+
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'cron.runs', { taskId: 'task-runs' });
+    expect(res.ok).toBe(true);
+    expect(res.payload).toHaveLength(1);
+    expect(res.payload[0].duration_ms).toBe(1234);
+    expect(res.payload[0].status).toBe('success');
+    ws.close();
+  });
+
+  it('agents.create + agents.list round-trip', async () => {
+    server = await startGatewayServer(testPort);
+    server.registerMethod('agents.create', async (params) => {
+      const { id, name, description, model } = params as any;
+      return createAgent({ id, name, description, model });
+    });
+    server.registerMethod('agents.list', async () => getAllAgents());
+
+    const ws = await connectAndAuth(testPort);
+    const createRes = await call(ws, 'agents.create', { id: 'agent-1', name: 'Test Agent', description: 'A test', model: 'claude-sonnet-4-6' });
+    expect(createRes.ok).toBe(true);
+    expect(createRes.payload.id).toBe('agent-1');
+
+    const listRes = await call(ws, 'agents.list');
+    expect(listRes.ok).toBe(true);
+    expect(listRes.payload).toHaveLength(1);
+    expect(listRes.payload[0].name).toBe('Test Agent');
+    ws.close();
+  });
+
+  it('agents.delete removes agent', async () => {
+    createAgent({ id: 'agent-del', name: 'Delete Me' });
+
+    server = await startGatewayServer(testPort);
+    server.registerMethod('agents.delete', async (params) => {
+      const { id } = params as any;
+      const { deleteAgent: da } = await import('../db.js');
+      const ok = da(id);
+      if (!ok) throw new Error('not found');
+      return { ok: true, id };
+    });
+
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'agents.delete', { id: 'agent-del' });
+    expect(res.ok).toBe(true);
+    expect(getAgentById('agent-del')).toBeUndefined();
+    ws.close();
+  });
+
+  it('logs.tail returns audit entries', async () => {
+    logAuditEvent({ timestamp: new Date().toISOString(), event_type: 'access', actor: 'user1', target: 'gateway', details: '{}', outcome: 'success' });
+
+    server = await startGatewayServer(testPort);
+    server.registerMethod('logs.tail', async (params) => {
+      const { limit } = (params || {}) as any;
+      return getAuditEvents(limit || 50);
+    });
+
+    const ws = await connectAndAuth(testPort);
+    const res = await call(ws, 'logs.tail', { limit: 10 });
+    expect(res.ok).toBe(true);
+    expect(res.payload.length).toBeGreaterThanOrEqual(1);
+    expect(res.payload[0].event_type).toBe('access');
+    ws.close();
   });
 });

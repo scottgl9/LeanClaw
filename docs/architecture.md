@@ -25,8 +25,13 @@ LeanClaw is a single-process Node.js runtime combining a WebSocket gateway, cont
 │                                                     │
 │  ┌───────────┐  ┌──────────┐  ┌─────────────────┐ │
 │  │  SQLite   │  │  Plugins │  │  LLM Providers  │ │
-│  │  (DB)     │  │  (ext.)  │  │  (Anthropic/GH) │ │
+│  │  (DB)     │  │  (ext.)  │  │  (Anth/GH/Local)│ │
 │  └───────────┘  └──────────┘  └─────────────────┘ │
+│                                                     │
+│  ┌────────────────────────────────────────────────┐ │
+│  │           Node Registry (distributed)          │ │
+│  │   Register/invoke/pair nodes + pending work     │ │
+│  └────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -71,7 +76,15 @@ Discovers and loads external plugins:
 Multi-LLM support:
 - Anthropic Claude (API key + OAuth)
 - GitHub Copilot (token + OAuth)
+- Local LLM via OpenAI-compatible API (`src/providers/openai-compat.ts`) — works with vLLM, SGLang, llama.cpp, Ollama
 - Token budget management (daily/monthly)
+
+### Node Registry (`src/nodes/`)
+Distributed node management:
+- `NodeRegistry` — register/unregister/list/get/rename/invoke/sendEvent + pairing flow
+- `PendingWorkQueue` — enqueue/drain/pull/ack with TTL expiry (max 64 items per node)
+- Node role clients auto-register on gateway connect
+- Gateway broadcasts `node.connected`/`node.disconnected` events to all clients
 
 ## Data Flow
 
@@ -113,12 +126,13 @@ SQLite (`better-sqlite3`) with tables:
 - `registered_groups` — Group registrations with config
 - `audit_log` — Security event audit trail
 - `provider_usage` — Token usage tracking per group/provider
+- `agents` — Agent definitions (CRUD via gateway methods)
 
 ## Testing
 
-LeanClaw has **473 tests** across two suites:
+LeanClaw has **621 tests** across two suites:
 
-### Unit Tests (`src/`) — 339 tests
+### Unit Tests (`src/`) — 492 tests
 Cover all internal components:
 - `gateway/protocol.test.ts` — Protocol v3 schema, frame types, ConnectParams, HelloOkPayload
 - `gateway/auth.test.ts` — API key enforcement, rate limiting, RBAC
@@ -145,4 +159,4 @@ npm run e2e           # E2E only
 npm run e2e:scorecard # OpenClaw compatibility scorecard
 ```
 
-**Compatibility scorecard**: P0 25/25 ✅ · P1 22/22 ✅ · P2 62/62 ✅ · Known gaps: 0
+**Compatibility scorecard**: P0 25/25 · P1 22/22 · P2 62/62 · Known gaps: 0

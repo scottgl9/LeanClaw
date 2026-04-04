@@ -103,6 +103,47 @@ export class ApprovalManager {
     return result;
   }
 
+  /**
+   * Wait for a specific approval to be resolved or time out.
+   * Returns the approval decision (true = approved, false = rejected/timeout).
+   */
+  async waitForDecision(approvalId: string, timeoutMs?: number): Promise<{ resolved: boolean; approved: boolean }> {
+    const entry = this.pending.get(approvalId);
+    if (!entry) return { resolved: false, approved: false };
+
+    const maxWait = Math.min(timeoutMs || this.timeout, 120_000);
+    const start = Date.now();
+
+    return new Promise<{ resolved: boolean; approved: boolean }>((resolve) => {
+      const pollTimer = setInterval(() => {
+        // Check if the approval was resolved
+        if (!this.pending.has(approvalId)) {
+          clearInterval(pollTimer);
+          resolve({ resolved: true, approved: true }); // Was resolved by resolveApproval
+          return;
+        }
+        if (Date.now() - start >= maxWait) {
+          clearInterval(pollTimer);
+          resolve({ resolved: false, approved: false });
+        }
+      }, 200);
+    });
+  }
+
+  /**
+   * Batch resolve multiple approvals at once.
+   * Returns the count of successfully resolved approvals.
+   */
+  batchResolve(approvalIds: string[], approved: boolean, resolvedBy?: string): number {
+    let count = 0;
+    for (const id of approvalIds) {
+      if (this.resolveApproval(id, approved, resolvedBy)) {
+        count++;
+      }
+    }
+    return count;
+  }
+
   /** Clear all pending approvals (for shutdown) */
   clear(): void {
     for (const entry of this.pending.values()) {
