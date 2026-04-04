@@ -3,8 +3,8 @@
  * Core lifecycle: startup, message loop, task execution, shutdown.
  */
 import { randomUUID } from 'crypto';
-import { POLL_INTERVAL, ASSISTANT_NAME, IDLE_TIMEOUT, TIMEZONE, TRIGGER_PATTERN, resolveGroupFolderPath, GATEWAY_PORT, GATEWAY_HOST, CONTAINER_IMAGE, MAX_CONCURRENT_CONTAINERS, DEFAULT_PROVIDER, AUTO_COMPACT } from './config.js';
-import { initDatabase, getAllRegisteredGroups, getAllChats, getRouterState, setRouterState, getNewMessages, getMessagesSince, getAllTasks, getTaskById, createTask, deleteTask, logTaskRun, updateTask, updateTaskAfterRun, setRegisteredGroup, storeMessage, storeChatMetadata, logCompaction } from './db.js';
+import { POLL_INTERVAL, ASSISTANT_NAME, IDLE_TIMEOUT, TIMEZONE, TRIGGER_PATTERN, resolveGroupFolderPath, GATEWAY_PORT, GATEWAY_HOST, CONTAINER_IMAGE, MAX_CONCURRENT_CONTAINERS, DEFAULT_PROVIDER, AUTO_COMPACT, LOCAL_LLM_BASE_URL, LOCAL_LLM_API_KEY, LOCAL_LLM_MODEL, writeConfigFile } from './config.js';
+import { initDatabase, getAllRegisteredGroups, getAllChats, getRouterState, setRouterState, getNewMessages, getMessagesSince, getAllTasks, getTaskById, createTask, deleteTask, logTaskRun, updateTask, updateTaskAfterRun, setRegisteredGroup, storeMessage, storeChatMetadata, logCompaction, getTaskRunLogs, createAgent, getAgentById, getAllAgents, updateAgent as dbUpdateAgent, deleteAgent as dbDeleteAgent, getAuditEvents, getProviderUsage } from './db.js';
 import { logger } from './logger.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans, runContainerAgent, writeTasksSnapshot, writeGroupsSnapshot, type ContainerOutput } from './agent/container.js';
 import { SessionManager } from './agent/session.js';
@@ -24,6 +24,7 @@ import { getRegisteredChannelNames } from './channels/registry.js';
 import { registerProvider, getProviderContainerEnv, listProviders } from './providers/base.js';
 import { AnthropicProvider } from './providers/anthropic.js';
 import { CopilotProvider } from './providers/copilot.js';
+import { OpenAICompatibleProvider } from './providers/openai-compat.js';
 import { formatMessages, formatOutbound, findChannel, routeOutbound } from './router.js';
 import { startIpcWatcher, stopIpcWatcher } from './ipc.js';
 import { loadSenderAllowlist, isTriggerAllowed } from './security/sender-allowlist.js';
@@ -75,9 +76,27 @@ export async function startRuntime(): Promise<RuntimeState> {
   registerProvider(anthropic);
   const copilot = new CopilotProvider();
   registerProvider(copilot);
+  // Local LLM provider (OpenAI-compatible: vLLM, SGLang, llama.cpp, Ollama, etc.)
+  const localLlm = new OpenAICompatibleProvider({
+    id: 'local',
+    name: 'Local LLM',
+    baseUrl: LOCAL_LLM_BASE_URL,
+    apiKey: LOCAL_LLM_API_KEY || undefined,
+    defaultModel: LOCAL_LLM_MODEL || undefined,
+  });
+  if (localLlm.isConfigured()) {
+    registerProvider(localLlm);
+    // Try to discover models from the running server
+    localLlm.discoverModels().catch(() => {
+      // Server may not be running at startup — models will be discovered on demand
+    });
+  }
+
   logger.info({
     anthropic: anthropic.isConfigured(),
     copilot: copilot.isConfigured(),
+    local: localLlm.isConfigured(),
+    localBaseUrl: localLlm.isConfigured() ? LOCAL_LLM_BASE_URL : undefined,
   }, 'LLM providers initialized');
 
   // 5. Load plugins
@@ -189,6 +208,41 @@ export async function startRuntime(): Promise<RuntimeState> {
     return state!.approvalManager!.getPending();
   });
 
+  gateway.registerMethod('exec.approval.request', async (params) => {
+    const { toolName, args, runId, clientId } = params as {
+      toolName: string; args?: unknown; runId?: string; clientId?: string;
+    };
+    if (!toolName) throw new Error('toolName is required');
+    const approvedPromise = state!.approvalManager!.requestApproval(
+      toolName, args || {}, runId || randomUUID(), clientId || '',
+    );
+    // Don't await — return immediately with the pending approval info
+    const pending = state!.approvalManager!.getPending();
+    const latest = pending.find((a) => a.toolName === toolName);
+    return { ok: true, approvalId: latest?.id, status: 'pending' };
+  });
+
+  gateway.registerMethod('exec.approval.waitDecision', async (params) => {
+    const { approvalId, timeout } = params as { approvalId: string; timeout?: number };
+    if (!approvalId) throw new Error('approvalId is required');
+    const result = await state!.approvalManager!.waitForDecision(approvalId, timeout);
+    return result;
+  });
+
+  gateway.registerMethod('exec.approvals.get', async () => {
+    return state!.approvalManager!.getPending();
+  });
+
+  gateway.registerMethod('exec.approvals.set', async (params) => {
+    const { approvalIds, approved, resolvedBy } = params as {
+      approvalIds: string[]; approved: boolean; resolvedBy?: string;
+    };
+    if (!approvalIds || !Array.isArray(approvalIds)) throw new Error('approvalIds array is required');
+    if (typeof approved !== 'boolean') throw new Error('approved must be a boolean');
+    const count = state!.approvalManager!.batchResolve(approvalIds, approved, resolvedBy);
+    return { ok: true, resolvedCount: count };
+  });
+
   // Skills system
   gateway.registerMethod('skills.bins', async () => {
     const skills = listSkills();
@@ -250,6 +304,203 @@ export async function startRuntime(): Promise<RuntimeState> {
     return listProviders().map((p) => ({
       id: p.id, name: p.name, configured: p.isConfigured(),
     }));
+  });
+
+  // Dynamic models.list from all providers
+  gateway.registerMethod('models.list', async () => {
+    const models: Array<{ id: string; provider: string; name: string }> = [];
+    for (const p of listProviders()) {
+      if (!p.isConfigured()) continue;
+      if ('listModels' in p && typeof (p as OpenAICompatibleProvider).listModels === 'function') {
+        models.push(...(p as OpenAICompatibleProvider).listModels());
+      } else if (p.id === 'anthropic') {
+        models.push(
+          { id: 'claude-sonnet-4-6', provider: 'anthropic', name: 'Claude Sonnet 4.6' },
+          { id: 'claude-opus-4-6', provider: 'anthropic', name: 'Claude Opus 4.6' },
+          { id: 'claude-haiku-4-5', provider: 'anthropic', name: 'Claude Haiku 4.5' },
+        );
+      } else if (p.id === 'copilot') {
+        models.push({ id: 'copilot', provider: 'copilot', name: 'GitHub Copilot' });
+      }
+    }
+    return models;
+  });
+
+  // --- Session methods ---
+  gateway.registerMethod('sessions.abort', async (params) => {
+    const { chatJid } = (params || {}) as { chatJid?: string };
+    if (!chatJid) throw new Error('chatJid is required');
+    state!.queue.closeStdin(chatJid);
+    state?.gateway?.broadcast(makeEvent('session.aborted', { chatJid }));
+    return { ok: true, aborted: true };
+  });
+
+  gateway.registerMethod('sessions.preview', async (params) => {
+    const { chatJid, limit } = (params || {}) as { chatJid?: string; limit?: number };
+    if (!chatJid) throw new Error('chatJid is required');
+    const messages = getMessagesSince(chatJid, '', ASSISTANT_NAME, limit || 20);
+    return messages.map((m) => ({
+      id: m.id, sender: m.sender, senderName: m.sender_name,
+      content: m.content?.slice(0, 500), timestamp: m.timestamp,
+    }));
+  });
+
+  gateway.registerMethod('sessions.usage', async (params) => {
+    const { groupFolder } = (params || {}) as { groupFolder?: string };
+    if (groupFolder) {
+      return getProviderUsage(groupFolder);
+    }
+    // Aggregate across all groups
+    const allGroups = Object.values(state!.registeredGroups);
+    const usage: Record<string, { inputTokens: number; outputTokens: number }> = {};
+    for (const g of allGroups) {
+      const groupUsage = getProviderUsage(g.folder);
+      for (const u of groupUsage) {
+        const key = u.provider;
+        if (!usage[key]) usage[key] = { inputTokens: 0, outputTokens: 0 };
+        usage[key].inputTokens += u.inputTokens;
+        usage[key].outputTokens += u.outputTokens;
+      }
+    }
+    return usage;
+  });
+
+  // Session subscriptions (in-memory per-connection tracking)
+  const sessionSubscriptions = new Map<string, Set<string>>();
+  const messageSubscriptions = new Map<string, Set<string>>();
+
+  gateway.registerMethod('sessions.subscribe', async (params, clientId) => {
+    const { sessionKey } = (params || {}) as { sessionKey?: string };
+    if (!sessionKey) throw new Error('sessionKey is required');
+    if (!sessionSubscriptions.has(clientId)) sessionSubscriptions.set(clientId, new Set());
+    sessionSubscriptions.get(clientId)!.add(sessionKey);
+    return { ok: true };
+  });
+
+  gateway.registerMethod('sessions.unsubscribe', async (params, clientId) => {
+    const { sessionKey } = (params || {}) as { sessionKey?: string };
+    if (!sessionKey) throw new Error('sessionKey is required');
+    sessionSubscriptions.get(clientId)?.delete(sessionKey);
+    return { ok: true };
+  });
+
+  gateway.registerMethod('sessions.messages.subscribe', async (params, clientId) => {
+    const { sessionKey } = (params || {}) as { sessionKey?: string };
+    if (!sessionKey) throw new Error('sessionKey is required');
+    if (!messageSubscriptions.has(clientId)) messageSubscriptions.set(clientId, new Set());
+    messageSubscriptions.get(clientId)!.add(sessionKey);
+    return { ok: true };
+  });
+
+  gateway.registerMethod('sessions.messages.unsubscribe', async (params, clientId) => {
+    const { sessionKey } = (params || {}) as { sessionKey?: string };
+    if (!sessionKey) throw new Error('sessionKey is required');
+    messageSubscriptions.get(clientId)?.delete(sessionKey);
+    return { ok: true };
+  });
+
+  // --- Config mutations ---
+  gateway.registerMethod('config.set', async (params) => {
+    const p = (params || {}) as Record<string, unknown>;
+    try {
+      writeConfigFile(p as any);
+      state?.gateway?.broadcast(makeEvent('config.changed', { source: 'gateway' }));
+      return { applied: true };
+    } catch (err) {
+      return { applied: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  gateway.registerMethod('config.patch', async (params) => {
+    const p = (params || {}) as Record<string, unknown>;
+    try {
+      writeConfigFile(p as any);
+      state?.gateway?.broadcast(makeEvent('config.changed', { source: 'gateway' }));
+      return { applied: true };
+    } catch (err) {
+      return { applied: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // --- Cron enhancements ---
+  gateway.registerMethod('cron.update', async (params) => {
+    const { taskId, ...updates } = (params || {}) as { taskId: string } & Partial<Pick<import('./types.js').ScheduledTask, 'prompt' | 'schedule_type' | 'schedule_value' | 'next_run' | 'status'>>;
+    if (!taskId) throw new Error('taskId is required');
+    const task = getTaskById(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    updateTask(taskId, updates);
+    state?.gateway?.broadcast(makeEvent('cron', { action: 'updated', taskId }));
+    return { ok: true, taskId };
+  });
+
+  gateway.registerMethod('cron.runs', async (params) => {
+    const { taskId, limit } = (params || {}) as { taskId?: string; limit?: number };
+    if (!taskId) throw new Error('taskId is required');
+    return getTaskRunLogs(taskId, limit || 50);
+  });
+
+  // --- Agent CRUD ---
+  gateway.registerMethod('agents.list', async () => {
+    return getAllAgents();
+  });
+
+  gateway.registerMethod('agents.create', async (params) => {
+    const { id, name, description, model, systemPrompt, tools } = (params || {}) as {
+      id?: string; name?: string; description?: string; model?: string; systemPrompt?: string; tools?: string;
+    };
+    if (!id || !name) throw new Error('id and name are required');
+    const agent = createAgent({ id, name, description, model, system_prompt: systemPrompt, tools });
+    return agent;
+  });
+
+  gateway.registerMethod('agents.update', async (params) => {
+    const { id, name, description, model, systemPrompt, tools } = (params || {}) as {
+      id?: string; name?: string; description?: string; model?: string; systemPrompt?: string; tools?: string;
+    };
+    if (!id) throw new Error('id is required');
+    const updates: Record<string, string | undefined> = {};
+    if (name !== undefined) updates.name = name;
+    if (description !== undefined) updates.description = description;
+    if (model !== undefined) updates.model = model;
+    if (systemPrompt !== undefined) updates.system_prompt = systemPrompt;
+    if (tools !== undefined) updates.tools = tools;
+    const ok = dbUpdateAgent(id, updates);
+    if (!ok) throw new Error(`Agent not found: ${id}`);
+    return { ok: true, id };
+  });
+
+  gateway.registerMethod('agents.delete', async (params) => {
+    const { id } = (params || {}) as { id?: string };
+    if (!id) throw new Error('id is required');
+    const ok = dbDeleteAgent(id);
+    if (!ok) throw new Error(`Agent not found: ${id}`);
+    return { ok: true, id };
+  });
+
+  // --- Tools effective (returns plugin tools, optionally filtered) ---
+  gateway.registerMethod('tools.effective', async (params) => {
+    const { sessionKey, agentId } = (params || {}) as { sessionKey?: string; agentId?: string };
+    const allTools = gateway.getPluginToolsCatalog();
+
+    // If agentId specified, filter by agent's tool whitelist
+    if (agentId) {
+      const agent = getAgentById(agentId);
+      if (agent?.tools) {
+        const allowed = new Set(agent.tools.split(',').map((t) => t.trim()));
+        return {
+          tools: allTools.filter((t) => allowed.has(t.name)),
+          sessionKey: sessionKey || null,
+        };
+      }
+    }
+
+    return { tools: allTools, sessionKey: sessionKey || null };
+  });
+
+  // --- Logs ---
+  gateway.registerMethod('logs.tail', async (params) => {
+    const { limit } = (params || {}) as { limit?: number };
+    return getAuditEvents(limit || 50);
   });
 
   // --- Agent execution method (replaces stub in server.ts) ---

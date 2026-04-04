@@ -8,7 +8,7 @@ LeanClaw is designed as a lightweight, security-first alternative to OpenClaw wh
 |------|--------|-------------|
 | **Protocol** | Full | OpenClaw clients can connect, authenticate, and call methods |
 | **Manifest** | Full | Plugin `openclaw.plugin.json` files load without modification |
-| **Methods** | Core + stubs | 12 real methods + 18 graceful stubs for commonly-called OpenClaw methods |
+| **Methods** | Full | Core methods fully implemented + node registry + agent CRUD + config mutations |
 | **Plugin Runtime** | Minimal | Plugins needing `openclaw/plugin-sdk/*` imports require adaptation |
 
 ## What's Compatible
@@ -23,6 +23,22 @@ LeanClaw implements the full OpenClaw Protocol v3 WebSocket handshake:
 - Tick heartbeat on configurable interval
 
 OpenClaw clients (gateway-client, CLI, control UI, mobile apps) can connect to LeanClaw using the standard connection flow.
+
+### Node Registry
+LeanClaw supports full distributed node management:
+- Node registration/unregistration with automatic pairing
+- Node listing, description, rename, invoke, and event sending
+- Pairing flow: request, list, approve, reject, verify
+- Pending work queue: enqueue, drain, pull, ack (TTL-based, max 64 per node)
+- Gateway broadcasts `node.connected` / `node.disconnected` events
+- Node role clients are registered automatically on connect
+
+### Local LLM Provider
+LeanClaw includes an OpenAI-compatible provider (`local`) for self-hosted models:
+- Works with vLLM, SGLang, llama.cpp, Ollama, or any OpenAI-compatible server
+- Auto-discovers models from the server's `/v1/models` endpoint
+- Supports summarize/compaction via chat completions
+- Configured via `LEANCLAW_LOCAL_LLM_*` env vars or `localProvider` config section
 
 ### Plugin Manifests
 LeanClaw accepts `openclaw.plugin.json` manifests with all standard fields:
@@ -50,28 +66,44 @@ LeanClaw implements core OpenClaw gateway methods plus graceful stubs:
 | `status` | Returns `{ ok: true, uptimeMs }` |
 | `sessions.list` | Active sessions |
 | `sessions.send` | Routes to `chat.send` when `chatJid` + `text` provided |
-| `sessions.patch` / `.create` / `.delete` / `.reset` / `.compact` / `.resolve` | Sensible stubs |
+| `sessions.patch` / `.create` / `.delete` / `.reset` / `.compact` / `.resolve` | Session management |
+| `sessions.abort` | Abort an active session |
+| `sessions.preview` | Preview session content |
+| `sessions.usage` | Session token usage statistics |
+| `sessions.subscribe` / `sessions.unsubscribe` | Subscribe to session events |
+| `sessions.messages.subscribe` / `sessions.messages.unsubscribe` | Subscribe to session message streams |
 | `config.get` | Current configuration |
-| `config.set` / `config.patch` | Returns `{ applied: false, reason: "Use env vars" }` |
+| `config.set` / `config.patch` | Write configuration changes to config.json |
 | `config.schema` | Empty JSON schema |
 | `channels.status` | Connected channels |
 | `channels.logout` | `{ ok: true }` |
 | `cron.list` / `cron.add` / `cron.remove` / `cron.run` / `cron.status` | Task management |
+| `cron.update` | Update an existing scheduled task |
+| `cron.runs` | Query task run history |
 | `chat.send` / `chat.abort` | Message sending and abort |
 | `groups.list` / `providers.list` | LeanClaw extensions |
-| `models.list` | Claude + Copilot model list |
-| `tools.catalog` / `tools.effective` | Empty catalog / `{ tools: [], sessionKey }` |
-| `agents.list` / `logs.tail` | Empty arrays |
+| `models.list` | Claude + Copilot + local model list |
+| `tools.catalog` | Tool catalog |
+| `tools.effective` | Returns real plugin tools, filtered by agent whitelist |
+| `agents.list` | List agents |
+| `agents.create` / `agents.update` / `agents.delete` | Agent CRUD with SQLite persistence |
+| `logs.tail` | Returns audit log entries |
 | `wake` | `{ ok: true }` |
 | `send` | Alias — forwards to `chat.send` |
 | `gateway.identity.get` | `{ name: "LeanClaw", runtime: "leanclaw" }` |
 | `system-presence` | Returns connected client presence map |
 | `system-event` | Accepts client beacons — `{ ok: true, received: true }` |
 | `agent` | Graceful stub — `{ ok: true, status: "not_supported" }` with roadmap message |
-| `exec.approval.resolve` | Stub — `{ ok: true, resolved: false, reason: "..." }` |
+| `exec.approval.resolve` | Resolve exec approval decision |
+| `exec.approval.request` / `exec.approval.waitDecision` | Request approval and wait for decision |
+| `exec.approvals.get` / `exec.approvals.set` | Get/set approval policies |
 | `device.token.rotate` | Returns new UUID device token |
 | `device.token.revoke` | Returns `{ ok: true, revoked: true }` |
 | `skills.bins` | Returns `{ bins: [], version: "0.0.0" }` |
+| `node.list` / `node.describe` / `node.rename` | Node registry management |
+| `node.invoke` / `node.invoke.result` / `node.event` | Node invocation and events |
+| `node.pair.request` / `node.pair.list` / `node.pair.approve` / `node.pair.reject` / `node.pair.verify` | Node pairing flow |
+| `node.pending.enqueue` / `node.pending.drain` / `node.pending.pull` / `node.pending.ack` | Node pending work queue |
 
 ### HTTP Health Endpoints
 
@@ -91,24 +123,22 @@ LeanClaw intentionally omits these OpenClaw features:
 - **Bundled plugins** — All 84 OpenClaw extensions are external
 - **Mobile apps** — No Android, iOS, or macOS companion apps
 - **Web UI** — No control UI (use WebSocket clients)
-- **Device pairing** — No device identity or pairing flow
 - **Fly.io deployment** — No cloud deployment configs
 - **Canvas host** — No live canvas UI
 - **TTS/STT** — No text-to-speech/speech-to-text (available via plugins)
-- **Node pairing** — No distributed node management
 - **Wizard** — No setup wizard flow
 
 ### Simplified
-- **Auth** — API key only (no device tokens, bootstrap tokens, or password auth)
+- **Auth** — API key + device tokens (no bootstrap tokens or password auth); config mutations supported via `config.set`/`config.patch`
 - **Plugin SDK** — Minimal surface (no jiti lazy loading, no full OpenClaw runtime API)
-- **Configuration** — Environment variables only (no TOML/YAML config files)
+- **Configuration** — Environment variables, `.env` files, and `config.json` (no TOML/YAML); `config.set`/`config.patch` write to config.json at runtime
 - **Container runtime** — Docker only (no Podman, no Apple Container)
 
 ### Added in LeanClaw
 - **Token budget management** — Per-group daily/monthly limits
 - **Heartbeat-cron collision avoidance** — Skip heartbeats during cron execution
 - **Pre-run script hooks** — Validate runs before agent execution
-- **Multi-LLM providers** — Built-in Anthropic + GitHub Copilot support
+- **Multi-LLM providers** — Built-in Anthropic + GitHub Copilot + local OpenAI-compatible (vLLM, SGLang, llama.cpp, Ollama)
 - **Structured audit logging** — SQLite audit trail
 - **RBAC hooks** — Pluggable role-based access control
 
@@ -140,12 +170,12 @@ Verified against OpenClaw Protocol v3 specification — **0 known gaps**:
 | Priority | Tests | Pass Rate |
 |----------|-------|-----------|
 | P0 — Critical (handshake, core methods) | 25 | 100% |
-| P1 — High (method surface, auth, sessions) | 22 | 100% |
-| P2 — Medium (stubs, device tokens, skills) | 62 | 100% |
+| P1 — High (method surface, auth, sessions, nodes) | 22 | 100% |
+| P2 — Medium (stubs, device tokens, skills, agents) | 62 | 100% |
 
 ## Compatibility Testing
 
-LeanClaw includes 473 tests covering OpenClaw compatibility:
+LeanClaw includes 621 tests covering OpenClaw compatibility:
 
 **Unit tests** (`src/`):
 - `src/gateway/protocol.test.ts` — Protocol v3 schema validation, frame shapes, ConnectParams
@@ -174,7 +204,7 @@ Scenario C:  Chaos Tests            (6 tests)
 
 Run with:
 ```bash
-npm test              # Full suite (473 tests)
+npm test              # Full suite (621 tests)
 npm run e2e           # E2E only (129 tests)
 npm run e2e:scorecard # Compatibility report
 ```

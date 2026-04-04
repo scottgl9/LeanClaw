@@ -128,11 +128,78 @@ Connect via WebSocket to `ws://127.0.0.1:18789` (configurable via `LEANCLAW_GATE
 | `system-presence` | Connected client presence map | `[{ connId, clientId, mode, platform, ts }]` |
 | `system-event` | Accept client beacon | `{ ok: true, received: true }` |
 | `agent` | Trigger agent run (stub) | `{ ok: true, status: "not_supported", message: "..." }` |
-| `tools.effective` | Session-scoped tool list | `{ tools: [], sessionKey }` |
-| `exec.approval.resolve` | Resolve exec approval | `{ ok: true, resolved: false, reason: "..." }` |
+| `tools.effective` | Session-scoped tool list (real plugin tools, filtered by agent whitelist) | `{ tools: [...], sessionKey }` |
+| `exec.approval.resolve` | Resolve exec approval decision | `{ ok: true, resolved: true }` |
+| `exec.approval.request` | Request exec approval | `{ ok: true, requestId }` |
+| `exec.approval.waitDecision` | Wait for approval decision | `{ ok: true, decision, ... }` |
+| `exec.approvals.get` | Get approval policies | `{ policies: [...] }` |
+| `exec.approvals.set` | Set approval policies | `{ ok: true }` |
 | `device.token.rotate` | Issue new device token | `{ ok: true, deviceToken: "<uuid>", rotatedAt }` |
 | `device.token.revoke` | Revoke a device token | `{ ok: true, revoked: true }` |
 | `skills.bins` | Available skill executables | `{ bins: [], version: "0.0.0" }` |
+
+### Node Methods
+| Method | Description | Params / Returns |
+|--------|-------------|------------------|
+| `node.list` | List registered nodes | Returns `[{ nodeId, name, caps, connectedAt }]` |
+| `node.describe` | Get node details | `{ nodeId }` |
+| `node.rename` | Rename a node | `{ nodeId, name }` |
+| `node.invoke` | Invoke a method on a node | `{ nodeId, method, params }` |
+| `node.invoke.result` | Return result of a node invocation | `{ nodeId, requestId, result }` |
+| `node.event` | Send an event to a node | `{ nodeId, event, payload }` |
+
+### Node Pairing
+| Method | Description | Params |
+|--------|-------------|--------|
+| `node.pair.request` | Request pairing with the gateway | `{ name, caps }` |
+| `node.pair.list` | List pending pairing requests | _(none)_ |
+| `node.pair.approve` | Approve a pairing request | `{ requestId }` |
+| `node.pair.reject` | Reject a pairing request | `{ requestId }` |
+| `node.pair.verify` | Verify a pairing token | `{ token }` |
+
+### Node Pending Work
+| Method | Description | Params |
+|--------|-------------|--------|
+| `node.pending.enqueue` | Enqueue work for a node | `{ nodeId, work }` (max 64 per node, TTL-based) |
+| `node.pending.drain` | Drain all pending work for a node | `{ nodeId }` |
+| `node.pending.pull` | Pull next pending work item | `{ nodeId }` |
+| `node.pending.ack` | Acknowledge completed work | `{ nodeId, workId }` |
+
+### Session Subscriptions
+| Method | Description | Params |
+|--------|-------------|--------|
+| `sessions.abort` | Abort an active session | `{ sessionId }` |
+| `sessions.preview` | Preview session content | `{ sessionId }` |
+| `sessions.usage` | Get session token usage | `{ sessionId }` |
+| `sessions.subscribe` | Subscribe to session events | `{ sessionId }` |
+| `sessions.unsubscribe` | Unsubscribe from session events | `{ sessionId }` |
+| `sessions.messages.subscribe` | Subscribe to session message stream | `{ sessionId }` |
+| `sessions.messages.unsubscribe` | Unsubscribe from session message stream | `{ sessionId }` |
+
+### Configuration Mutation
+| Method | Description | Params |
+|--------|-------------|--------|
+| `config.set` | Set a configuration value (writes to config.json) | `{ key, value }` |
+| `config.patch` | Patch multiple configuration values (writes to config.json) | `{ values: { key: value, ... } }` |
+
+### Agent CRUD
+| Method | Description | Params |
+|--------|-------------|--------|
+| `agents.list` | List all agents | _(none)_ |
+| `agents.create` | Create a new agent (SQLite persistence) | `{ name, config, ... }` |
+| `agents.update` | Update an existing agent | `{ agentId, ... }` |
+| `agents.delete` | Delete an agent | `{ agentId }` |
+
+### Cron Extensions
+| Method | Description | Params |
+|--------|-------------|--------|
+| `cron.update` | Update an existing scheduled task | `{ taskId, ... }` |
+| `cron.runs` | Query task run history | `{ taskId? }` |
+
+### Audit
+| Method | Description | Params |
+|--------|-------------|--------|
+| `logs.tail` | Return audit log entries | `{ limit?, offset? }` |
 
 ## Events
 
@@ -146,6 +213,12 @@ Connect via WebSocket to `ws://127.0.0.1:18789` (configurable via `LEANCLAW_GATE
 | `system` | System events / beacons | `{ ... }` |
 | `exec.approval.requested` | Exec approval needed | `{ runId, command, ... }` |
 | `shutdown` | Gateway shutting down | `{ reason }` |
+| `node.connected` | A node registered with the gateway | `{ nodeId, name, caps }` |
+| `node.disconnected` | A node disconnected from the gateway | `{ nodeId, reason }` |
+| `node.invoke.request` | Invoke request forwarded to a node | `{ nodeId, method, params }` |
+| `node.invoke.result` | Result of a node invocation | `{ nodeId, method, result }` |
+| `session.aborted` | A session was aborted | `{ sessionId, reason }` |
+| `config.changed` | Configuration was mutated | `{ keys, source }` |
 
 ## Error Codes
 
@@ -158,6 +231,9 @@ Connect via WebSocket to `ws://127.0.0.1:18789` (configurable via `LEANCLAW_GATE
 | `NOT_LINKED` | Not connected to a provider |
 | `NOT_PAIRED` | Device pairing required |
 | `AGENT_TIMEOUT` | Agent execution timed out |
+| `NOT_CONNECTED` | Target node is not connected |
+| `NOT_FOUND` | Requested resource not found |
+| `TIMEOUT` | Operation timed out |
 
 ## HTTP Endpoints
 

@@ -86,4 +86,53 @@ describe('ApprovalManager', () => {
     expect(await p2).toBe(false);
     expect(manager.size).toBe(0);
   });
+
+  describe('waitForDecision', () => {
+    it('returns resolved:false for unknown approvalId', async () => {
+      const result = await manager.waitForDecision('unknown');
+      expect(result.resolved).toBe(false);
+      expect(result.approved).toBe(false);
+    });
+
+    it('returns resolved:false on timeout', async () => {
+      const shortManager = new ApprovalManager(broadcast, 500);
+      shortManager.requestApproval('tool', {}, 'run', 'client');
+      const pending = shortManager.getPending();
+
+      const result = await shortManager.waitForDecision(pending[0].id, 100);
+      expect(result.resolved).toBe(false);
+      shortManager.clear();
+    });
+  });
+
+  describe('batchResolve', () => {
+    it('resolves multiple approvals', async () => {
+      const p1 = manager.requestApproval('tool-a', {}, 'run-10', 'client-1');
+      const p2 = manager.requestApproval('tool-b', {}, 'run-11', 'client-1');
+
+      const pending = manager.getPending();
+      const ids = pending.map((p) => p.id);
+
+      const count = manager.batchResolve(ids, true, 'admin');
+      expect(count).toBe(2);
+
+      expect(await p1).toBe(true);
+      expect(await p2).toBe(true);
+      expect(manager.size).toBe(0);
+    });
+
+    it('returns 0 for unknown IDs', () => {
+      const count = manager.batchResolve(['unknown-1', 'unknown-2'], true);
+      expect(count).toBe(0);
+    });
+
+    it('handles mix of known and unknown IDs', async () => {
+      const p1 = manager.requestApproval('tool', {}, 'run', 'client');
+      const pending = manager.getPending();
+
+      const count = manager.batchResolve([pending[0].id, 'unknown'], false, 'admin');
+      expect(count).toBe(1);
+      expect(await p1).toBe(false);
+    });
+  });
 });

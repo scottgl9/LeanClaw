@@ -27,6 +27,8 @@ import {
   type MethodHandler,
   type RequestFrame,
 } from './protocol.js';
+import { NodeRegistry } from '../nodes/registry.js';
+import { PendingWorkQueue } from '../nodes/pending.js';
 
 export interface GatewayClient {
   id: string;
@@ -52,6 +54,8 @@ export interface GatewayServer {
   setPluginTools(tools: Array<{ name: string; description: string; pluginId: string }>): void;
   setPluginHttpRoutes(routes: PluginHttpRouteEntry[]): void;
   getPluginToolsCatalog(): Array<{ name: string; description: string; pluginId: string }>;
+  getNodeRegistry(): NodeRegistry;
+  getPendingWorkQueue(): PendingWorkQueue;
 }
 
 export function startGatewayServer(
@@ -63,6 +67,8 @@ export function startGatewayServer(
   const startTime = Date.now();
   let eventSeq = 0;
   let pluginToolsCatalog: Array<{ name: string; description: string; pluginId: string }> = [];
+  const nodeRegistry = new NodeRegistry();
+  const pendingWorkQueue = new PendingWorkQueue();
 
   // --- Register core methods ---
   const registerMethod = (method: string, handler: MethodHandler) => {
@@ -180,25 +186,140 @@ export function startGatewayServer(
     version: '0.0.0',
   }));
 
-  // --- Node pairing (optional per spec, stubs for client compatibility) ---
-  registerMethod('node.pair.request', async (params) => {
-    const { deviceId } = (params || {}) as { deviceId?: string };
-    return { ok: true, requestId: randomUUID(), deviceId: deviceId || 'unknown', status: 'pending' };
+  // --- Node methods (OpenClaw-compatible) ---
+  registerMethod('node.list', async () => {
+    return nodeRegistry.listConnected().map((n) => ({
+      nodeId: n.nodeId,
+      displayName: n.displayName,
+      platform: n.platform,
+      version: n.version,
+      deviceFamily: n.deviceFamily,
+      caps: n.caps,
+      commands: n.commands,
+      connectedAtMs: n.connectedAtMs,
+    }));
   });
-  registerMethod('node.pair.list', async () => ({ pending: [], paired: [] }));
+
+  registerMethod('node.describe', async (params) => {
+    const { nodeId } = (params || {}) as { nodeId?: string };
+    if (!nodeId) return { error: 'nodeId is required' };
+    const node = nodeRegistry.get(nodeId);
+    if (!node) return { error: `Node not found: ${nodeId}` };
+    return node;
+  });
+
+  registerMethod('node.rename', async (params) => {
+    const { nodeId, displayName } = (params || {}) as { nodeId?: string; displayName?: string };
+    if (!nodeId || !displayName) return { error: 'nodeId and displayName are required' };
+    const ok = nodeRegistry.rename(nodeId, displayName);
+    return { ok, nodeId };
+  });
+
+  registerMethod('node.invoke', async (params) => {
+    const p = (params || {}) as { nodeId?: string; command?: string; params?: unknown; timeoutMs?: number; idempotencyKey?: string };
+    if (!p.nodeId || !p.command) return { ok: false, error: 'nodeId and command are required' };
+    const result = await nodeRegistry.invoke({
+      nodeId: p.nodeId,
+      command: p.command,
+      params: p.params,
+      timeoutMs: p.timeoutMs,
+      idempotencyKey: p.idempotencyKey,
+    });
+    return result;
+  });
+
+  registerMethod('node.invoke.result', async (params) => {
+    const p = (params || {}) as { id?: string; nodeId?: string; ok?: boolean; payload?: unknown; error?: string };
+    if (!p.id || !p.nodeId) return { ok: false, error: 'id and nodeId are required' };
+    const found = nodeRegistry.handleInvokeResult({
+      id: p.id,
+      nodeId: p.nodeId,
+      ok: p.ok ?? true,
+      payload: p.payload,
+      error: p.error,
+    });
+    return { ok: true, matched: found };
+  });
+
+  registerMethod('node.event', async (params) => {
+    const { nodeId, event, payload } = (params || {}) as { nodeId?: string; event?: string; payload?: unknown };
+    if (!nodeId || !event) return { ok: false, error: 'nodeId and event are required' };
+    const sent = nodeRegistry.sendEvent(nodeId, event, payload);
+    return { ok: sent };
+  });
+
+  // --- Node pairing (OpenClaw-compatible) ---
+  registerMethod('node.pair.request', async (params) => {
+    const { deviceId, displayName } = (params || {}) as { deviceId?: string; displayName?: string };
+    if (!deviceId) return { ok: false, error: 'deviceId is required' };
+    const req = nodeRegistry.requestPairing(deviceId, displayName);
+    return { ok: true, requestId: req.requestId, deviceId, status: 'pending' };
+  });
+
+  registerMethod('node.pair.list', async () => {
+    const { pending, paired } = nodeRegistry.listPairingRequests();
+    return {
+      pending: pending.map((r) => ({ requestId: r.requestId, deviceId: r.deviceId, displayName: r.displayName, requestedAtMs: r.requestedAtMs })),
+      paired: paired.map((n) => ({ nodeId: n.nodeId, displayName: n.displayName, platform: n.platform, connectedAtMs: n.connectedAtMs })),
+    };
+  });
+
   registerMethod('node.pair.approve', async (params) => {
     const { requestId } = (params || {}) as { requestId?: string };
-    return { ok: true, requestId, approved: true };
+    if (!requestId) return { ok: false, error: 'requestId is required' };
+    const approved = nodeRegistry.approvePairing(requestId);
+    return { ok: approved, requestId, approved };
   });
+
   registerMethod('node.pair.reject', async (params) => {
     const { requestId } = (params || {}) as { requestId?: string };
-    return { ok: true, requestId, rejected: true };
+    if (!requestId) return { ok: false, error: 'requestId is required' };
+    const rejected = nodeRegistry.rejectPairing(requestId);
+    return { ok: rejected, requestId, rejected };
   });
+
   registerMethod('node.pair.verify', async (params) => {
     const { deviceId } = (params || {}) as { deviceId?: string };
-    return { ok: true, deviceId, verified: true };
+    if (!deviceId) return { ok: false, error: 'deviceId is required' };
+    const verified = nodeRegistry.verifyNode(deviceId);
+    return { ok: true, deviceId, verified };
   });
-  registerMethod('node.invoke', async () => ({ ok: true, result: null }));
+
+  // --- Node pending work queue (OpenClaw-compatible) ---
+  registerMethod('node.pending.enqueue', async (params) => {
+    const p = (params || {}) as { nodeId?: string; type?: string; priority?: 'normal' | 'high'; expiresMs?: number; payload?: unknown; idempotencyKey?: string };
+    if (!p.nodeId || !p.type) return { ok: false, error: 'nodeId and type are required' };
+    const { item, deduped } = pendingWorkQueue.enqueue({
+      nodeId: p.nodeId,
+      type: p.type,
+      priority: p.priority,
+      expiresMs: p.expiresMs,
+      payload: p.payload,
+      idempotencyKey: p.idempotencyKey,
+    });
+    return { ok: true, itemId: item.id, deduped };
+  });
+
+  registerMethod('node.pending.drain', async (params) => {
+    const { nodeId } = (params || {}) as { nodeId?: string };
+    if (!nodeId) return { ok: false, error: 'nodeId is required' };
+    const items = pendingWorkQueue.drain(nodeId);
+    return { ok: true, items };
+  });
+
+  registerMethod('node.pending.pull', async (params) => {
+    const { nodeId, itemId } = (params || {}) as { nodeId?: string; itemId?: string };
+    if (!nodeId || !itemId) return { ok: false, error: 'nodeId and itemId are required' };
+    const item = pendingWorkQueue.pull(nodeId, itemId);
+    return { ok: !!item, item };
+  });
+
+  registerMethod('node.pending.ack', async (params) => {
+    const { nodeId, itemId } = (params || {}) as { nodeId?: string; itemId?: string };
+    if (!nodeId || !itemId) return { ok: false, error: 'nodeId and itemId are required' };
+    const acked = pendingWorkQueue.ack(nodeId, itemId);
+    return { ok: acked };
+  });
 
   // --- Talk config (OpenClaw UI compat) ---
   registerMethod('talk.config', async () => ({ channels: [], defaults: {} }));
@@ -399,6 +520,23 @@ export function startGatewayServer(
         client.clientInfo = params.client;
         client.role = params.role || 'operator';
 
+        // Register node-role clients in the node registry
+        if (client.role === 'node') {
+          const nodeSession = nodeRegistry.register(client, params);
+          // Broadcast node.connected event to all other clients
+          const nodeEvent = makeEvent('node.connected', {
+            nodeId: nodeSession.nodeId,
+            displayName: nodeSession.displayName,
+            platform: nodeSession.platform,
+          });
+          const eventMsg = JSON.stringify(nodeEvent);
+          for (const c of clients.values()) {
+            if (c.connId !== connId && c.authenticated && c.ws.readyState === WebSocket.OPEN) {
+              c.ws.send(eventMsg);
+            }
+          }
+        }
+
         const helloOk: HelloOkPayload = {
           type: 'hello-ok',
           protocol: PROTOCOL_VERSION,
@@ -408,7 +546,7 @@ export function startGatewayServer(
           },
           features: {
             methods: Array.from(methods.keys()),
-            events: ['connect.challenge', 'tick', 'chat', 'agent', 'session.message', 'health', 'cron', 'presence', 'system', 'exec.approval.requested', 'shutdown'],
+            events: ['connect.challenge', 'tick', 'chat', 'agent', 'session.message', 'health', 'cron', 'presence', 'system', 'exec.approval.requested', 'shutdown', 'node.connected', 'node.disconnected', 'node.invoke.request', 'node.invoke.result'],
           },
           snapshot: {
             presence: Array.from(clients.values())
@@ -469,6 +607,22 @@ export function startGatewayServer(
 
     ws.on('close', () => {
       clearTimeout(handshakeTimer);
+
+      // Unregister node if this was a node connection
+      const disconnectedNodeId = nodeRegistry.unregister(connId);
+      if (disconnectedNodeId) {
+        // Broadcast node.disconnected event
+        const nodeEvent = makeEvent('node.disconnected', {
+          nodeId: disconnectedNodeId,
+        });
+        const eventMsg = JSON.stringify(nodeEvent);
+        for (const c of clients.values()) {
+          if (c.authenticated && c.ws.readyState === WebSocket.OPEN) {
+            c.ws.send(eventMsg);
+          }
+        }
+      }
+
       clients.delete(connId);
       logger.debug({ connId }, 'WebSocket disconnected');
     });
@@ -508,6 +662,8 @@ export function startGatewayServer(
       const server: GatewayServer = {
         async close() {
           clearInterval(tickTimer);
+          nodeRegistry.clear();
+          pendingWorkQueue.clear();
           for (const client of clients.values()) {
             client.ws.close(1001, 'Server shutting down');
           }
@@ -532,6 +688,12 @@ export function startGatewayServer(
         setPluginTools,
         setPluginHttpRoutes,
         getPluginToolsCatalog,
+        getNodeRegistry() {
+          return nodeRegistry;
+        },
+        getPendingWorkQueue() {
+          return pendingWorkQueue;
+        },
       };
 
       resolve(server);
