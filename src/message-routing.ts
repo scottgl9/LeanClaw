@@ -40,9 +40,11 @@ export function resolveMessageRoutingModel(
   messageText: string,
 ): string | undefined {
   if (!config?.rules?.length) return undefined;
+  if (messageText == null) return config.default?.trim() || undefined;
   const text = messageText.toLowerCase();
   for (const rule of config.rules) {
-    if (rule.match.some((kw) => text.includes(kw.toLowerCase()))) {
+    if (!rule.match?.length) continue;
+    if (rule.match.some((kw) => text.includes(kw.trim().toLowerCase()))) {
       return rule.model?.trim() || undefined;
     }
   }
