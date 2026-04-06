@@ -38,6 +38,8 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  /** Override model for this turn (from message routing). */
+  model?: string;
 }
 
 export interface ContainerOutput {

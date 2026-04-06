@@ -28,6 +28,8 @@ import { OpenAICompatibleProvider } from './providers/openai-compat.js';
 import { formatMessages, formatOutbound, findChannel, routeOutbound } from './router.js';
 import { startIpcWatcher, stopIpcWatcher } from './ipc.js';
 import { loadSenderAllowlist, isTriggerAllowed } from './security/sender-allowlist.js';
+import { MESSAGE_ROUTING_CONFIG } from './config.js';
+import { resolveMessageRoutingModel } from './message-routing.js';
 import type { AgentRun, Channel, NewMessage, RegisteredGroup, ScheduledTask } from './types.js';
 
 export interface RuntimeState {
@@ -801,6 +803,13 @@ async function processGroupMessages(chatJid: string, s: RuntimeState): Promise<b
 
   const prompt = formatMessages(missedMessages, TIMEZONE);
 
+  // Resolve model via keyword-based message routing (pre-turn, zero LLM cost)
+  const lastMessageText = missedMessages[missedMessages.length - 1]?.content ?? '';
+  const routedModel = resolveMessageRoutingModel(MESSAGE_ROUTING_CONFIG, lastMessageText);
+  if (routedModel) {
+    logger.info({ group: group.name, model: routedModel }, 'Message routing: using routed model');
+  }
+
   // Advance cursor (save old for rollback on error)
   const previousCursor = s.lastAgentTimestamp[chatJid] || '';
   s.lastAgentTimestamp[chatJid] = missedMessages[missedMessages.length - 1].timestamp;
@@ -845,7 +854,7 @@ async function processGroupMessages(chatJid: string, s: RuntimeState): Promise<b
     if (output.status === 'error') {
       hadError = true;
     }
-  });
+  }, routedModel);
 
   if (channel) await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
@@ -911,6 +920,7 @@ async function runAgent(
   chatJid: string,
   s: RuntimeState,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  model?: string,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
   const sessionId = s.sessions.getSession(group.folder);
@@ -947,7 +957,7 @@ async function runAgent(
   try {
     const output = await runContainerAgent(
       group,
-      { prompt, sessionId, groupFolder: group.folder, chatJid, isMain, assistantName: ASSISTANT_NAME },
+      { prompt, sessionId, groupFolder: group.folder, chatJid, isMain, assistantName: ASSISTANT_NAME, model },
       providerEnv,
       (proc, containerName) => s.queue.registerProcess(chatJid, proc, containerName, group.folder),
       wrappedOnOutput,
@@ -969,7 +979,7 @@ async function runAgent(
           // Retry with compacted session
           const retryOutput = await runContainerAgent(
             group,
-            { prompt, sessionId: s.sessions.getSession(group.folder), groupFolder: group.folder, chatJid, isMain, assistantName: ASSISTANT_NAME },
+            { prompt, sessionId: s.sessions.getSession(group.folder), groupFolder: group.folder, chatJid, isMain, assistantName: ASSISTANT_NAME, model },
             providerEnv,
             (proc, containerName) => s.queue.registerProcess(chatJid, proc, containerName, group.folder),
             wrappedOnOutput,

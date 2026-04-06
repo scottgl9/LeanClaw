@@ -60,6 +60,29 @@ All settings can be configured via:
 | `LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error/fatal) |
 | `LOG_FORMAT` | `pretty` | Log format (`pretty` or `json`) |
 
+## Message Routing
+
+Keyword-based pre-turn model routing lets you automatically route messages to different LLM models based on keywords in the incoming message — before any LLM call. Zero cost, pure string matching.
+
+Add a `messageRouting` section to `~/.config/leanclaw/config.json`:
+
+```json
+{
+  "messageRouting": {
+    "rules": [
+      { "match": ["code review", "PR", "diff", "refactor"], "model": "github-copilot/claude-sonnet-4.6" },
+      { "match": ["research", "search", "find"],            "model": "gemini-3-flash" }
+    ],
+    "default": "qwen35"
+  }
+}
+```
+
+- **First-match-wins**: Rules are evaluated in order; the first rule with a matching keyword is used.
+- **Case-insensitive**: Keyword matching ignores case.
+- **`default`**: Fallback model if no rule matches. If omitted, the primary configured model is used.
+- **Zero cost**: Pure string matching — no LLM calls to decide routing.
+
 ## Gateway API
 
 ### HTTP Endpoints

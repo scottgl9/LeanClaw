@@ -83,6 +83,13 @@ const ConfigFileSchema = z.object({
   hooks: z.object({
     enabled: z.boolean().optional(),
   }).optional(),
+  messageRouting: z.object({
+    rules: z.array(z.object({
+      match: z.array(z.string()),
+      model: z.string(),
+    })).optional(),
+    default: z.string().optional(),
+  }).optional(),
 }).strict().optional();
 
 export type ConfigFile = z.infer<typeof ConfigFileSchema>;
@@ -290,6 +297,32 @@ export const CONTAINER_CPU_LIMIT = env('LEANCLAW_CONTAINER_CPU_LIMIT') || '';
 export const LOCAL_LLM_BASE_URL = env('LEANCLAW_LOCAL_LLM_BASE_URL') || '';
 export const LOCAL_LLM_API_KEY = env('LEANCLAW_LOCAL_LLM_API_KEY') || '';
 export const LOCAL_LLM_MODEL = env('LEANCLAW_LOCAL_LLM_MODEL') || '';
+
+// --- Message Routing ---
+
+/**
+ * Read the raw structured config file (returns undefined on parse failure).
+ * Used to access structured config fields that aren't mapped to env vars.
+ */
+function readRawConfig(): z.infer<typeof ConfigFileSchema> | undefined {
+  const filePath = path.join(os.homedir(), '.config', 'leanclaw', 'config.json');
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const result = ConfigFileSchema.safeParse(JSON.parse(raw));
+    return result.success ? result.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+import type { MessageRoutingConfig } from './message-routing.js';
+
+/** Message routing config loaded from leanclaw.json `messageRouting` field. */
+export const MESSAGE_ROUTING_CONFIG: MessageRoutingConfig | undefined = (() => {
+  const raw = readRawConfig();
+  if (!raw?.messageRouting) return undefined;
+  return raw.messageRouting as MessageRoutingConfig;
+})();
 
 // --- Timezone ---
 

@@ -75,7 +75,7 @@ async function main() {
     process.exit(1);
   }
 
-  const { prompt, sessionId, groupFolder, chatJid, isMain, isScheduledTask, assistantName } = input;
+  const { prompt, sessionId, groupFolder, chatJid, isMain, isScheduledTask, assistantName, model } = input;
   const workDir = isMain ? '/workspace/project' : '/workspace/group';
 
   // Check if claude CLI is available
@@ -98,14 +98,14 @@ async function main() {
 
   // Run initial prompt
   let currentSessionId = sessionId;
-  currentSessionId = await runClaude(prompt, currentSessionId, workDir);
+  currentSessionId = await runClaude(prompt, currentSessionId, workDir, model);
 
   // For scheduled tasks, we're done after one turn
   if (isScheduledTask) return;
 
   // Poll IPC input for follow-up messages (multi-turn conversation)
   for await (const followUpText of pollIpcInput()) {
-    currentSessionId = await runClaude(followUpText, currentSessionId, workDir);
+    currentSessionId = await runClaude(followUpText, currentSessionId, workDir, model);
   }
 }
 
@@ -113,10 +113,13 @@ async function main() {
  * Run Claude CLI with a prompt and emit the output.
  * Returns the session ID for continuation.
  */
-async function runClaude(prompt, sessionId, workDir) {
+async function runClaude(prompt, sessionId, workDir, model) {
   const args = ['--print', '--output-format', 'text'];
   if (sessionId) {
     args.push('--resume', sessionId);
+  }
+  if (model) {
+    args.push('--model', model);
   }
   args.push(prompt);
 
